@@ -1,0 +1,55 @@
+FROM python:3.11-slim
+
+#COPY keys_and_certs/thecompany_2023.crt /etc/pki/ca-trust/source/anchors/
+#COPY dnf.conf /etc/dnf/dnf.conf
+#ENV http_proxy="http://campus-proxy.rz.bankenit.de:8080"
+#ENV https_proxy="http://campus-proxy.rz.bankenit.de:8080"
+#ENV no_proxy=".fiducia.de,.bankenit.de,.fiduciagad.de,.gad.de,registry,.core,.dev,127.0.0.1,localhost"
+#ENV HTTP_PROXY="http://campus-proxy.rz.bankenit.de:8080"
+#ENV HTTPS_PROXY="http://campus-proxy.rz.bankenit.de:8080"
+#ENV NO_PROXY=".fiducia.de,.bankenit.de,.fiduciagad.de,.gad.de,registry,.core,.dev,127.0.0.1,localhost"
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    curl iputils-ping wget jq telnet net-tools nmap jq \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install mitmproxy
+RUN pip install --upgrade pip && pip install --no-cache-dir mitmproxy==11.0.2
+
+# Create app directory
+WORKDIR /app
+
+# Create cache directory
+RUN mkdir -p /app/the_cache_dir
+
+# Copy the cache addon script
+COPY cache_addon.py /app/
+
+# Set environment variables
+ENV PYTHONUNBUFFERED=1
+
+# init certificates
+# this will only run few seconds to create the keys_and_certs, than die
+RUN mkdir -p ~/.mitmproxy &&  timeout 5 mitmdump --set confdir=~/.mitmproxy || true
+
+# Run mitmdump with the cache addon
+#CMD ["mitmdump", 
+#     "-s", "/app/cache_addon.py", 
+#     "--set", "connection_strategy=eager", 
+#     "--set", "http2=true",
+#     "--set", "http2_ping_keepalive=30",
+#     "--listen-port", "3128",
+#     "--listen-host", "0.0.0.0" ]
+
+
+
+CMD ["mitmdump", \ 
+     "-s", "/app/cache_addon.py", \
+#     "--mode", "upstream:http://campus-proxy.rz.bankenit.de:8080", \
+     "--set", "connection_strategy=lazy", \
+     "--set", "termlog_verbosity=warn", \
+     "--set", "server_connect_timeout=60", \
+     "--set", "http2=false", \
+     "--listen-port", "3128", \
+     "--listen-host", "0.0.0.0" ]

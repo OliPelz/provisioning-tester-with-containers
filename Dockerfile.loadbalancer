@@ -1,0 +1,26 @@
+FROM docker.io/library/haproxy:2.8
+
+USER root
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+      curl netcat-openbsd dnsutils ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
+USER haproxy
+
+# Copy HAProxy configuration
+COPY loadbalancer.conf /usr/local/etc/haproxy/haproxy.cfg
+
+# Copy SSL key and cert (combined in one file)
+COPY keys_and_certs/loadbalancer-ssl-combined.pem /usr/local/etc/haproxy/haproxy.pem
+
+# Expose multiple ports (documented only; still need -p when running)
+# 8080 = unprivileged port 80, plain http
+# 8443 = unprivileged ssl port 443
+# 7000 = serving haproxy loadbalancer gui
+EXPOSE 8080 8443 7000
+
+# Run HAProxy
+CMD ["haproxy", "-f", "/usr/local/etc/haproxy/haproxy.cfg"]
+

@@ -1,0 +1,94 @@
+FROM rockylinux:9
+
+# Create a non-root user (default: podmanuser) and set up SSH
+# Note: this can be overwritten by --build-arg SSH_USER=xxx
+#       and will only be set to its default (podmanuser)
+#       if the build-arg is not defined
+# Note2: ARG is a build-time parameter, only valid till build time
+ARG SSH_USER
+# convert the build time var to a runtime-var so it can be seen
+# by our entrypoints and CMDs!!!
+ENV SSH_USER=${SSH_USER:-podmanuser}
+
+RUN [ -z "$SSH_USER" ] && (echo "ERROR: SSH_USER is not set!" && exit 1) || echo "Using SSH_USER=$SSH_USER"
+
+COPY dnf.conf /etc/dnf/dnf.conf
+
+# Install systemd, SSH, firewalld, cron, and common tools
+RUN dnf --allowerasing -y install \
+    dnf-plugins-core \
+    systemd \
+    openssh-server \
+    firewalld \
+    cronie \
+    python3 \
+    bash \
+    vim \
+    iproute \
+    net-tools \
+    procps-ng \
+    sudo \
+    git \
+    nmap-ncat \
+    rsync \
+    curl \
+    wget \
+    jq \
+    && dnf clean all
+
+# Install BATS from GitHub
+#RUN git clone https://github.com/bats-core/bats-core.git /tmp/bats-core && \
+#    /tmp/bats-core/install.sh /usr/local && \
+#    rm -rf /tmp/bats-core
+
+# Enable services
+RUN systemctl enable sshd && \
+    systemctl enable firewalld && \
+    systemctl enable crond
+
+# Configure SSH to disable password login and enforce public key authentication
+RUN sed -i 's/#PasswordAuthentication yes/PasswordAuthentication no/' /etc/ssh/sshd_config && \
+    sed -i 's/#PubkeyAuthentication yes/PubkeyAuthentication yes/' /etc/ssh/sshd_config && \
+    sed -i 's/#AuthorizedKeysFile .ssh\/authorized_keys/AuthorizedKeysFile .ssh\/authorized_keys/' /etc/ssh/sshd_config
+
+RUN useradd -m -s /bin/bash ${SSH_USER} && \
+    mkdir -p /home/${SSH_USER}/.ssh && \
+    chown ${SSH_USER}:${SSH_USER} /home/${SSH_USER}/.ssh && \
+    chmod 700 /home/${SSH_USER}/.ssh && \
+    echo "${SSH_USER} ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers.d/${SSH_USER}
+
+ENV http_proxy="http://webproxycache:3128"
+
+RUN echo "export http_proxy=${http_proxy}" >> /home/${SSH_USER}/.bashrc && \
+    echo "export https_proxy=${http_proxy}" >> /home/${SSH_USER}/.bashrc && \
+    echo "export http_proxy=${http_proxy}" >> /root/.bashrc && \
+    echo "export https_proxy=${http_proxy}" >> /root/.bashrc
+
+RUN mkdir /tests
+COPY test_mitmproxy_script.sh /tests
+COPY test_s3storage_script.sh /tests
+
+RUN chmod +x /tests/*
+
+COPY keys_and_certs/thecompany-ckm.pem /etc/pki/ca-trust/source/anchors/
+COPY keys_and_certs/mitmproxy-ca-cert.pem /etc/pki/ca-trust/source/anchors/
+COPY keys_and_certs/postgres_ssl_server.crt /etc/pki/ca-trust/source/anchors/
+COPY keys_and_certs/s3storage_ssl_server.crt /etc/pki/ca-trust/source/anchors/
+
+#COPY keys_and_certs/server-ssl-cert.pem /etc/pki/ca-trust/source/anchors/
+
+RUN update-ca-trust extract
+
+# Copy configuration script and entrypoint script
+COPY configure.sh /usr/local/bin/configure.sh
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/configure.sh /usr/local/bin/entrypoint.sh
+
+# Expose SSH port
+EXPOSE 22
+
+# Set entrypoint to run configure.sh before systemd
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+
+# Set systemd as entrypoint
+CMD ["/usr/lib/systemd/systemd"]

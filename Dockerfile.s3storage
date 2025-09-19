@@ -1,0 +1,24 @@
+# Use MinIO server image
+FROM quay.io/minio/minio:latest
+
+# Set environment variables for MinIO root credentials
+ENV MINIO_ROOT_USER=harbormock_access
+ENV MINIO_ROOT_PASSWORD=harbormock_secret
+# Debug log level
+ENV MINIO_SERVER_ARGS="--debug"
+
+# MinIO automatically detects TLS if private.key and public.crt exist in /root/.minio/certs
+RUN mkdir -p /root/.minio/certs
+COPY ./keys_and_certs/s3storage_server.key /root/.minio/certs/private.key
+COPY ./keys_and_certs/s3storage_ssl_server.crt /root/.minio/certs/public.crt
+
+# Copy an entrypoint script
+COPY entrypoint_s3storage.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
+# Expose MinIO default port
+EXPOSE 9000
+
+# Use custom entrypoint
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+

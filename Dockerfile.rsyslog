@@ -1,0 +1,14 @@
+FROM debian:12-slim
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+      rsyslog rsyslog-gnutls ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY keys_and_certs/rsyslog-ssl-key.pem /etc/ssl/private/server-key.pem
+COPY keys_and_certs/rsyslog-ssl-cert.pem /etc/ssl/keys_and_certs/server-cert.pem
+COPY rsyslog.conf /etc/rsyslog.conf
+
+EXPOSE 6601
+
+CMD ["rsyslogd", "-n"]
