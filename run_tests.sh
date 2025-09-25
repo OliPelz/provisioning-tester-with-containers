@@ -1,93 +1,148 @@
-#!/bin/bash
+#!/usr/bin/env bash
 set -euo pipefail
-CONTAINER_NAME="test-container"
-SSH_PORT="2222"
-LOCAL_KEY="./id_ed25519.pub"
+#set -x
+this_script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Colors
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m'
+# ---------- config ------------------------------------------------------------
+LOCAL_KEY="keys_and_certs/id_ed25519_for_containers"  # used if your make target expects SSH_KEY
+DEFAULT_WORKFLOW="install"
+DEFAULT_HOSTS=("my-ubuntu-machine" "my-rocky-machine" "my-arch-machine")
 
-# Parse parameters
-ONLY_LIST=""
-SKIP_LIST=""
-DO_TESTS=true
-RUN_LIST="_run_list_all"
-MASTER_NODE=rreeimreg002
+# ---------- colors ------------------------------------------------------------
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
 
-for arg in "$@"; do
-    case $arg in
-        --only=*)
-            ONLY_LIST="${arg#--only=}"
-            ;;
-        --skip=*)
-            SKIP_LIST="${arg#--skip=}"
-            ;;
-        --run-list=*)
-            RUN_LIST="${arg#--run-list=}"
-            ;;
-        --no-tests)
-            DO_TESTS=false
-            ;;
-        *)
-            echo -e "${RED}Unknown argument: $arg${NC}" >&2
-            exit 1
-            ;;
-    esac
+# ---------- state (defaults) --------------------------------------------------
+dry_run=0
+filter=""
+workflow="$DEFAULT_WORKFLOW"
+run_tests_only=0
+run_scripts_only=0
+machine_filter=""
+declare -a HOSTS=("${DEFAULT_HOSTS[@]}")
+
+# ---------- helpers -----------------------------------------------------------
+usage() {
+  cat <<EOF
+Usage: $0 [options]
+
+Options:
+  -d, --dry-run              Print actions without executing.
+  -w, --workflow NAME        Workflow name (default: ${DEFAULT_WORKFLOW}).
+  -f, --filter LIST          Comma-separated script names to run (exact match).
+  -t, --run-test-only        Run tests only.
+  -s, --run-script-only      Run scripts only.
+  -H, --hosts LIST           Comma-separated hostnames (overrides defaults).
+  -m, --filter-machine LIST  Comma-separated substrings; only hosts whose names
+                             contain any of these will be targeted (case-insensitive).
+  -k, --ssh-key PATH         SSH key path to pass as SSH_KEY to make (default: ${LOCAL_KEY}).
+  -h, --help                 Show this help.
+
+Example:
+  $0 -d -w install -f "setup/os.sh,apps/docker.sh" -H "web-ubuntu-1,db-arch-2" -m "ubuntu,arch" -s
+EOF
+}
+
+log()       { printf "%b\n" "${BLUE}[INFO]${NC} $*"; }
+log_warn()  { printf "%b\n" "${YELLOW}[WARN]${NC} $*"; }
+log_ok()    { printf "%b\n" "${GREEN}[OK]${NC}  $*"; }
+log_error() { printf "%b\n" "${RED}[ERROR]${NC} $*" 1>&2; }
+die() { log_error "$*"; exit 1; }
+join_by() { local IFS="$1"; shift; echo "$*"; }
+
+build_provision_args() {
+  local -a args=()
+  (( dry_run == 1 ))         && args+=("--dry-run")
+  [[ -n "$filter" ]]         && args+=("--filter" "$filter")
+  (( run_tests_only == 1 ))  && args+=("-t")
+  (( run_scripts_only == 1 ))&& args+=("-s")
+  args+=("-w" "$workflow")
+
+  local out=""; local a
+  for a in "${args[@]}"; do printf -v out "%s %q" "$out" "$a"; done
+  echo "${out# }"
+}
+
+# ---------- arg parsing -------------------------------------------------------
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -d|--dry-run)         dry_run=1; shift ;;
+    -f|--filter)          filter="${2:-}"; shift 2 ;;
+    -t|--run-test-only)   run_tests_only=1; shift ;;
+    -s|--run-script-only) run_scripts_only=1; shift ;;
+    -w|--workflow)        workflow="${2:-}"; shift 2 ;;
+    -H|--hosts)           IFS=',' read -r -a HOSTS <<< "${2:-}"; shift 2 ;;
+    -m|--filter-machine)  machine_filter="${2:-}"; shift 2 ;;
+    -k|--ssh-key)         LOCAL_KEY="${2:-}"; shift 2 ;;
+    -h|--help)            usage; exit 0 ;;
+    --)                   shift; break ;;
+    *)                    die "Unknown option: $1" ;;
+  esac
 done
 
-if [[ -n "$ONLY_LIST" && -n "$SKIP_LIST" ]]; then
-    echo -e "${RED}Error: --only and --skip cannot be used at the same time.${NC}" >&2
-    exit 1
+# ---------- validations & host filtering -------------------------------------
+(( run_tests_only == 1 && run_scripts_only == 1 )) && \
+  die "Choose only one of --run-test-only or --run-script-only."
+[[ -z "$workflow" ]] && die "Workflow name cannot be empty."
+
+if [[ ! -f "$LOCAL_KEY" ]]; then
+  # Not fatal — your makefile may not require SSH_KEY.
+  log_warn "SSH key not found at '${LOCAL_KEY}'. Proceeding without checking."
 fi
 
-RUN_LIST="/init-scripts/${RUN_LIST:-_run_list_all}"
+if (( ${#HOSTS[@]} == 0 )); then
+  die "No hosts provided. Use --hosts or set DEFAULT_HOSTS."
+fi
 
-# Convert comma-separated lists to arrays
-IFS=',' read -r -a ONLY <<< "$ONLY_LIST"
-IFS=',' read -r -a SKIP <<< "$SKIP_LIST"
+# Apply machine substring filter (case-insensitive, comma-separated)
+if [[ -n "$machine_filter" ]]; then
+  IFS=',' read -r -a _patterns <<< "$machine_filter"
+  declare -a _filtered=()
+  for host in "${HOSTS[@]}"; do
+    lh="${host,,}"
+    for pat in "${_patterns[@]}"; do
+      lp="${pat,,}"; lp="${lp//[[:space:]]/}"
+      [[ -z "$lp" ]] && continue
+      if [[ "$lh" == *"$lp"* ]]; then
+        _filtered+=("$host"); break
+      fi
+    done
+  done
+  HOSTS=("${_filtered[@]}")
+  (( ${#HOSTS[@]} == 0 )) && die "No hosts match --filter-machine '${machine_filter}'."
+fi
 
+# ---------- banner ------------------------------------------------------------
+log "Wrapper starting with:"
+log "  workflow       : ${workflow}"
+log "  filter         : ${filter:-<none>}"
+log "  machine filter : ${machine_filter:-<none>}"
+log "  mode           : $( ((run_tests_only)) && echo 'tests only' || { ((run_scripts_only)) && echo 'scripts only' || echo 'scripts + tests'; } )"
+log "  dry-run        : $dry_run"
+log "  hosts          : $(join_by ', ' "${HOSTS[@]}")"
+log "  ssh key        : ${LOCAL_KEY}"
 
-# Run setup scripts
-echo -e "${BLUE}Running setup scripts in container...${NC}" >&2
+# ---------- run ---------------------------------------------------------------
+PROVISION_ESCAPED_ARGS="$(build_provision_args)"
 
-#run_list=$(make ssh_run_cmd MYHOSTNAME=$MASTER_NODE CMD="cat $RUN_LIST | grep -v '#' | awk 'NF'")
-run_list=$(cat .$RUN_LIST | grep -v '#' | awk 'NF')
+for host in "${HOSTS[@]}"; do
+  printf -v REMOTE_CMD "cd %q && ./provision %s" "/data/bash-provisioner" "$PROVISION_ESCAPED_ARGS"
 
+  MAKE_CMD=( make ssh_run_cmd MYHOSTNAME="$host" CMD="$REMOTE_CMD" )
+  [[ -f "$LOCAL_KEY" ]] && MAKE_CMD+=( SSH_KEY="$LOCAL_KEY" )
 
-# Process each line of the run_list properly
-while IFS= read -r script_with_args; do
-   for hostname in rreeimreg002 oreeimreg002 xreeimreg002; do
-        # Extract the script name (first word) and preserve the arguments
-        script_name=$(echo "$script_with_args" | awk '{print $1}')
-        script_args=$(echo "$script_with_args" | awk '{$1=""; print $0}' | sed 's/^ *//')
+  if (( dry_run == 1 )); then
+    printf "%b\n" "${GREEN}[DRY_RUN]${NC} ${MAKE_CMD[*]}"
+    continue
+  fi
+  
+  log "Running on host '${host}'..."
+  if "${MAKE_CMD[@]}"; then
+    log_ok "Host '${host}' finished successfully."
+  else
+    log_error "Host '${host}' failed."
+    exit 1  # uncomment to fail-fast
+  fi
+done
 
-        # Filtering logic
-        if [[ ${#ONLY[@]} -gt 0 ]]; then
-            [[ " ${ONLY[*]} " != *" $script_name "* ]] && continue
-        elif [[ ${#SKIP[@]} -gt 0 ]]; then
-            [[ " ${SKIP[*]} " == *" $script_name "* ]] && continue
-        fi
-
-        # Adjust logging to handle "no arguments" case
-        if [[ -z "$script_args" ]]; then
-            echo -e "${YELLOW}Running $script_name with no arguments...${NC}" >&2
-        else
-            echo -e "${YELLOW}Running $script_name with arguments: $script_args...${NC}" >&2
-        fi
-
-        # Run the script 2x to test for idempotency
-        # make ssh_run_cmd MYHOSTNAME=$hostname CMD="bash -c 'source /init-scripts/_env && bash /data/roles/$script_name $script_args'"
-        make ssh_run_cmd MYHOSTNAME=$hostname CMD="RUN_STAGE=lab bash /data/roles/$script_name $script_args"
-        if [ "$DO_TESTS" = "true" ]; then
-            # make ssh_run_cmd MYHOSTNAME=$hostname CMD="bash -c 'source /init-scripts/_env && bats --verbose-run /data/roles/tests/test_$(basename "$script_name" .sh).sh'"
-            make ssh_run_cmd MYHOSTNAME=$hostname CMD="RUN_STAGE=lab bash /data/roles/tests/test_$(basename "$script_name" .sh).sh $script_args"
-        fi
-   done
-done <<< "$run_list"
-
-echo -e "${GREEN}All tests completed${NC}"
+log_ok "All done."
 

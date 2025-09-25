@@ -1,0 +1,70 @@
+FROM archlinux:latest
+
+# User config (overridden via --build-arg SSH_USER=...)
+ARG SSH_USER
+ENV SSH_USER=${SSH_USER:-podmanuser}
+RUN [ -z "$SSH_USER" ] && (echo "ERROR: SSH_USER is not set!" && exit 1) || echo "Using SSH_USER=$SSH_USER"
+
+# ---- pacman: relax/disable download timeout for slow proxy ----
+# Pacman doesn’t take a numeric timeout like dnf/apt; use DisableDownloadTimeout.
+# Also turn on a few parallel downloads to keep things moving through a proxy.
+RUN sed -i 's/^#ParallelDownloads.*/ParallelDownloads = 5/' /etc/pacman.conf || true && \
+    (grep -q '^DisableDownloadTimeout' /etc/pacman.conf \
+      && sed -i 's/^#\?DisableDownloadTimeout/DisableDownloadTimeout/' /etc/pacman.conf \
+      || sed -i '/^\[options\]/a DisableDownloadTimeout' /etc/pacman.conf)
+
+# Base update + packages
+RUN pacman -Syu --noconfirm && \
+    pacman -S --noconfirm \
+      systemd \
+      openssh \
+      firewalld \
+      cronie \
+      python \
+      bash \
+      vim \
+      sudo \
+      rsync \
+      curl \
+      ca-certificates ca-certificates-utils && \
+    pacman -Scc --noconfirm
+
+# Enable services
+RUN systemctl enable sshd && \
+    systemctl enable firewalld && \
+    systemctl enable cronie
+
+# SSH hardening
+RUN sed -i 's/#PasswordAuthentication yes/PasswordAuthentication no/' /etc/ssh/sshd_config && \
+    sed -i 's/#PubkeyAuthentication yes/PubkeyAuthentication yes/' /etc/ssh/sshd_config && \
+    sed -i 's/#AuthorizedKeysFile .ssh\/authorized_keys/AuthorizedKeysFile .ssh\/authorized_keys/' /etc/ssh/sshd_config
+
+# User + sudoers
+RUN useradd -m -s /bin/bash ${SSH_USER} && \
+    mkdir -p /home/${SSH_USER}/.ssh && \
+    chown ${SSH_USER}:${SSH_USER} /home/${SSH_USER}/.ssh && \
+    chmod 700 /home/${SSH_USER}/.ssh && \
+    echo "${SSH_USER} ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/${SSH_USER} && \
+    chmod 440 /etc/sudoers.d/${SSH_USER}
+
+# Proxy exports
+ENV http_proxy="http://webproxycache:3128"
+RUN echo "export http_proxy=${http_proxy}"  >> /home/${SSH_USER}/.bashrc && \
+    echo "export https_proxy=${http_proxy}" >> /home/${SSH_USER}/.bashrc && \
+    echo "export http_proxy=${http_proxy}"  >> /root/.bashrc && \
+    echo "export https_proxy=${http_proxy}" >> /root/.bashrc
+
+# Tests + CA trust
+RUN mkdir /tests
+COPY test_mitmproxy_script.sh /tests
+RUN chmod +x /tests/*
+RUN update-ca-trust extract
+
+# Bootstrap scripts
+COPY configure.sh /usr/local/bin/configure.sh
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/configure.sh /usr/local/bin/entrypoint.sh
+
+EXPOSE 22
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+CMD ["/usr/lib/systemd/systemd"]

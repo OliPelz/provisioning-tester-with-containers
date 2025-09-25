@@ -1,0 +1,74 @@
+FROM ubuntu:24.04
+
+# User config (overridden via --build-arg SSH_USER=...)
+ARG SSH_USER
+ENV SSH_USER=${SSH_USER:-podmanuser}
+RUN [ -z "$SSH_USER" ] && (echo "ERROR: SSH_USER is not set!" && exit 1) || echo "Using SSH_USER=$SSH_USER"
+
+# ---- APT: extend timeouts for slow proxy ----
+# Similar intent to dnf.conf timeout=999999
+# ---- APT: extend timeouts for slow proxy ----
+RUN mkdir -p /etc/apt/apt.conf.d && \
+    cat > /etc/apt/apt.conf.d/95-timeouts.conf <<EOF
+Acquire::http::Timeout "999999";
+Acquire::https::Timeout "999999";
+Acquire::ftp::Timeout "999999";
+Acquire::Retries "10";
+EOF
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+      systemd \
+      openssh-server \
+      firewalld \
+      cron \
+      python3 \
+      bash \
+      vim \
+      sudo \
+      rsync \
+      curl \
+      ca-certificates \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Enable services
+RUN systemctl enable ssh && \
+    systemctl enable firewalld && \
+    systemctl enable cron
+
+# SSH hardening
+RUN sed -i 's/#PasswordAuthentication yes/PasswordAuthentication no/' /etc/ssh/sshd_config && \
+    sed -i 's/#PubkeyAuthentication yes/PubkeyAuthentication yes/' /etc/ssh/sshd_config && \
+    sed -i 's/#AuthorizedKeysFile .ssh\/authorized_keys/AuthorizedKeysFile .ssh\/authorized_keys/' /etc/ssh/sshd_config
+
+# User + sudoers
+RUN useradd -m -s /bin/bash ${SSH_USER} && \
+    mkdir -p /home/${SSH_USER}/.ssh && \
+    chown ${SSH_USER}:${SSH_USER} /home/${SSH_USER}/.ssh && \
+    chmod 700 /home/${SSH_USER}/.ssh && \
+    echo "${SSH_USER} ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/${SSH_USER} && \
+    chmod 440 /etc/sudoers.d/${SSH_USER}
+
+# Proxy exports
+ENV http_proxy="http://webproxycache:3128"
+RUN echo "export http_proxy=${http_proxy}"  >> /home/${SSH_USER}/.bashrc && \
+    echo "export https_proxy=${http_proxy}" >> /home/${SSH_USER}/.bashrc && \
+    echo "export http_proxy=${http_proxy}"  >> /root/.bashrc && \
+    echo "export https_proxy=${http_proxy}" >> /root/.bashrc
+
+# Tests + CA trust
+RUN mkdir /tests
+COPY test_mitmproxy_script.sh /tests
+RUN chmod +x /tests/*
+RUN update-ca-certificates
+
+# Bootstrap scripts
+COPY configure.sh /usr/local/bin/configure.sh
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/configure.sh /usr/local/bin/entrypoint.sh
+
+EXPOSE 22
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+CMD ["/lib/systemd/systemd"]
+

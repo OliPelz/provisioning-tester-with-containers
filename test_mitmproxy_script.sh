@@ -77,7 +77,7 @@ echo -e "  RPM URL 1: $RPM_URL1"
 echo -e "  RPM URL 2: $RPM_URL2"
 echo ""
 
-set -x
+#set -x
 
 # Clean cache
 rm -rf ./the_cache_dir/*

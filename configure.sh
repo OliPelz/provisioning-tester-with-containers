@@ -1,5 +1,5 @@
 #!/bin/bash
-set -x
+#set -x
 
 
 # Configure SSH access in firewalld *offline*

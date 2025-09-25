@@ -7,61 +7,46 @@ BLUE_COLOR=[0;34m
 NO_COLOR=[0m # No Color
 
 # Networking and Pod
-NETWORK_NAME=mynet
-SUBNET=10.6.107.0/24
-GATEWAY=10.6.107.1
+NETWORK_NAME=my-distribution-net
+SUBNET=10.6.120.0/24
+GATEWAY=10.6.120.1
 
 # Names / hostnames
-NAME1=rreeimreg002
-NAME2=oreeimreg002
-NAME3=xreeimreg002
-DB_NAME1=pgeek027
+NAME1=my-ubuntu-machine
+NAME2=my-rocky-machine
+NAME3=my-arch-machine
+
 WEBPROXYCACHE_NAME1=webproxycache
-RSYSLOG_NAME=rsyslog_server
-LOADBALANCER_NAME=haproxy_loadbalancer
-S3STORAGE_NAME=s3storage
-ALL_CONTAINER_NAMES_STRING=$(NAME1) $(NAME2) $(NAME3) $(DB_NAME1) $(WEBPROXYCACHE_NAME1) $(RSYSLOG_NAME) $(LOADBALANCER_NAME) $(S3STORAGE_NAME)
-ALL_CONTAINER_RUN_MAKE_TARGETS=run-app1 run-app2 run-app3 run-db run-webproxycache run-rsyslog run-loadbalancer run-s3storage
- 
+ALL_CONTAINER_NAMES_STRING=$(NAME1) $(NAME2) $(NAME3) $(WEBPROXYCACHE_NAME1)
+ALL_CONTAINER_RUN_MAKE_TARGETS=run-ubuntu run-rocky run-arch run-webproxycache
+
+NAME1_IMAGE_NAME=ubuntu-image
+NAME2_IMAGE_NAME=rocky-image
+NAME3_IMAGE_NAME=arch-image
+WEBPROXYCACHE_IMAGE_NAME=webproxycache-image
+
 # Ports
 SSH_PORT1=2222
 SSH_PORT2=2223
 SSH_PORT3=2224
 
 # Static IPs
-IP1=10.6.107.4
-IP2=10.6.107.5
-IP3=10.6.107.6
-DB_IP1=10.6.107.8
-WEBPROXYCACHE_IP1=10.6.107.9
-RSYSLOG_IP=10.6.107.10
-LOADBALANCER_IP=10.6.107.11
-S3STORAGE_IP=10.6.107.12
-
-# PostgreSQL credentials
-DB_USER=harbor_dev
-DB_PASS=harbormock_db_password
-DB_NAME=harbor_dev
-
-# Image names
-IMAGE_NAME=my-rocky-systemd-ssh-vpn
-WEBPROXYCACHE_IMAGE_NAME=webproxycache
-RSYSLOG_IMAGE_NAME=my-rsyslog_server
-POSTGRES_IMAGE_NAME=my-postgres_server
-LOADBALANCER_IMAGE_NAME=my-loadbalancer_server
-S3STORAGE_IMAGE_NAME=my-s3storage_server
+IP1=10.6.120.4
+IP2=10.6.120.5
+IP3=10.6.120.6
+WEBPROXYCACHE_IP1=10.6.120.9
 
 # SSH
 SSH_USER=$(shell echo "$${SSH_USER:-xgthaboradm}")
 LOCAL_PODMAN_USER=$(shell echo "$${USER}")
 LOCAL_KEY=$(PWD)
-PUB_KEY_PATH=$(PWD)/keys_and_certs/id_ed25519_for_containers.pub
+PROXY_CERT_BASE_PATH=$(PWD)/keys_and_certs
+PUB_KEY_PATH=$(PROXY_CERT_BASE_PATH)/id_ed25519_for_containers.pub
 PRIV_KEY_PATH=$(subst .pub,,$(PUB_KEY_PATH))
 LOCAL_VOLUME_MOUNT=$(shell if [ -n "$${LOCAL_VOLUME_MOUNT_STR}" ]; then echo "$${LOCAL_VOLUME_MOUNT_STR}" | tr ',' '\n' | while read -r mapping; do echo "-v $$mapping"; done; fi)
 
 .DEFAULT_GOAL := help
 
-PROXY_CERT_BASE_PATH=$(PWD)/keys_and_certs
 
 ##########################################################################################
 ## workflow:
@@ -73,15 +58,41 @@ all: build_all_images setup-network run  ## run complete workflow from build to 
 prompt_me:
 	@echo -n "Are you sure? [y/N] " && read ans && [ $${ans:-N} = y ]
 
+.PHONY: git-clone-or-pull
+git-clone-or-pull:
+	@org_repo_name=$$(basename "$(GIT_REPO_URL)" .git); \
+	repo_dir=$${TARGET_DIR:-$$org_repo_name}; \
+	enable_gitignore=$${TO_GITIGNORE:-false}; \
+	clean_up=$${CLEAN:-false}; \
+	if [ -d "$$repo_dir" ]; then \
+	echo "Repository '$$org_repo_name' already exists."; \
+	if [ "$$clean_up" == "true" ]; then \
+	echo "Cleaning up repository directory before pulling..."; \
+	(cd "$$repo_dir" && git clean -fd && git reset --hard); \
+	fi; \
+	echo "Pulling latest changes..."; \
+	(cd "$$repo_dir" && git pull > /dev/null); \
+	else \
+	echo "Cloning repository '$$org_repo_name' into '$(TARGET_DIR)'..."; \
+	git clone "$(GIT_REPO_URL)" "$$repo_dir"; \
+	fi; \
+	if [ "$$enable_gitignore" == "true" ]; then \
+	[ -f .gitignore ] && grep -q '^$(CLEANED_TARGET_DIR)$$' .gitignore || echo '$(CLEANED_TARGET_DIR)' >> .gitignore; \
+	fi;
+
+.PHONY: install-shunit2
+install-shunit2:
+	@mkdir -p ./bin
+	@curl -o ./bin/shunit2 https://raw.githubusercontent.com/kward/shunit2/refs/heads/master/shunit2
+
 .PHONY: prereqs
 prereqs:  ### prerequesites for running podman
 	@echo "$(BLUE_COLOR)Setting up subUID/subGID mappings for $(LOCAL_PODMAN_USER)...$(NC)" >&2
 	@sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 $(LOCAL_PODMAN_USER) || { echo "$(RED_COLOR)Failed to set subUID/subGID mappings$(NC)" >&2; exit 1; }
 	@echo "$(GREEN_COLOR)subUID/subGID mappings configured$(NC)" >&2
 	@mkdir -p keys_and_certs
+	@$(MAKE) git-clone-or-pull GIT_REPO_URL=git@github.com:OliPelz/bash-provisioner.git TARGET_DIR=bash-provisioner
 
-.PHONY: gen_all_certs
-gen_all_certs: gen_ssh_container_keys gen_ssl_cert
 .PHONY: gen_ssh_container_keys
 gen_ssh_container_keys: ### generate local ssh keypair for connecting to containers
 	@if [ -f $(PRIV_KEY_PATH) ] || [ -f $(PUB_KEY_PATH) ]; then \
@@ -132,22 +143,18 @@ setup-network:  ### setup podman network which holds all our containers
 	fi
 
 .PHONY: build_all_images
-build_all_images:  gen_all_certs render_loadbalancer_template ### build vm alike container image
-	@echo "🔨 Building custom Rocky image with systemd and sshd..."
+build_all_images: gen_ssh_container_keys ### build vm alike container image
+	@echo "🔨 Building custom images with systemd and sshd..."
 	@podman build -f Dockerfile.webproxycache -t $(WEBPROXYCACHE_IMAGE_NAME) .
-	@podman build -f Dockerfile.rsyslog -t $(RSYSLOG_IMAGE_NAME) .
-	@podman build -f Dockerfile.postgres -t $(POSTGRES_IMAGE_NAME) .
-	@podman build -f Dockerfile.loadbalancer -t $(LOADBALANCER_IMAGE_NAME) .
-	@podman build -f Dockerfile.s3storage -t $(S3STORAGE_IMAGE_NAME) .
 	@$(MAKE) get_proxy_cert
-	@podman build -f Dockerfile --build-arg SSH_USER=$(SSH_USER) -t $(IMAGE_NAME) .
+	@podman build -f Dockerfile.ubuntu --build-arg SSH_USER=$(SSH_USER) -t $(NAME1_IMAGE_NAME) .
+	@podman build -f Dockerfile.rocky --build-arg SSH_USER=$(SSH_USER) -t $(NAME2_IMAGE_NAME) .
+	@podman build -f Dockerfile.arch --build-arg SSH_USER=$(SSH_USER) -t $(NAME3_IMAGE_NAME) .
 
 # Target to create necessary volume directories
 make_volume_dirs:
 	@echo "Creating volume directories..."
 	mkdir -p $(PWD)/$(WEBPROXYCACHE_NAME1)_data
-	mkdir -p $(PWD)/$(DB_NAME1)_data
-	mkdir -p $(PWD)/$(S3STORAGE_NAME)_data
 	@echo "Volume directories created successfully!"
 
 render_loadbalancer_template:
@@ -157,32 +164,6 @@ render_loadbalancer_template:
 
 ##########################################################################################
 ## container lifecycle tasks:
-
-
-# Target to run the load balancer container
-run-loadbalancer: 
-	podman run -d \
-		--name $(LOADBALANCER_NAME) \
-		--network $(NETWORK_NAME) \
-		--ip $(LOADBALANCER_IP) \
-		--hostname $(LOADBALANCER_NAME) \
-		-p 8080:8080 \
-		-p 8443:8443 \
-		-p 7000:7000 \
-		$(LOADBALANCER_IMAGE_NAME)	
-	@echo "Load balancer container started successfully!"
-
-# Target to run the rsyslog container
-run-rsyslog:
-	podman run -d --name $(RSYSLOG_NAME) \
-		--network $(NETWORK_NAME) \
-		--ip $(RSYSLOG_IP) \
-		--hostname $(RSYSLOG_NAME) \
-		-e DNS_SERVER=8.8.8.8 \
-		-p 3128 \
-		-v $(PWD)/$(WEBPROXYCACHE_NAME1)_data:/app/the_cache_dir \
-		$(RSYSLOG_IMAGE_NAME)
-	@echo "Rsyslog container started successfully!"
 
 # Target to run the web proxy cache container
 run-webproxycache:
@@ -197,7 +178,7 @@ run-webproxycache:
 	@echo "Web proxy cache container started successfully!"
 
 # Target to run the application container (NAME1)
-run-app1:
+run-ubuntu:
 	podman run -d --name $(NAME1) \
 		--network $(NETWORK_NAME) \
 		--ip $(IP1) \
@@ -212,11 +193,11 @@ run-app1:
 		--userns=host \
 		--cap-add=SYS_ADMIN \
 		--security-opt label=disable \
-		$(IMAGE_NAME)
+		$(NAME1_IMAGE_NAME)
 	@echo "Application container $(NAME1) started successfully!"
 
 # Target to run the application container (NAME2)
-run-app2:
+run-rocky:
 	podman run -d --name $(NAME2) \
 		--network $(NETWORK_NAME) \
 		--ip $(IP2) \
@@ -228,11 +209,11 @@ run-app2:
 		$(LOCAL_VOLUME_MOUNT) \
 		-e SSH_USER=$(SSH_USER) \
 		-e PUB_KEY="$$(cat $(PUB_KEY_PATH))" \
-		$(IMAGE_NAME)
+		$(NAME2_IMAGE_NAME)
 	@echo "Application container $(NAME2) started successfully!"
 
 # Target to run the application container (NAME3)
-run-app3:
+run-arch:
 	podman run -d --name $(NAME3) \
 		--network $(NETWORK_NAME) \
 		--ip $(IP3) \
@@ -244,35 +225,8 @@ run-app3:
 		$(LOCAL_VOLUME_MOUNT) \
 		-e SSH_USER=$(SSH_USER) \
 		-e PUB_KEY="$$(cat $(PUB_KEY_PATH))" \
-		$(IMAGE_NAME)
+		$(NAME3_IMAGE_NAME)
 	@echo "Application container $(NAME3) started successfully!"
-
-# Target to run the database container
-run-db:
-	podman run -d --name $(DB_NAME1) \
-		--network $(NETWORK_NAME) \
-		--ip $(DB_IP1) \
-		--hostname $(DB_NAME1) \
-		--privileged \
-		-e POSTGRES_USER=$(DB_USER) \
-		-e POSTGRES_PASSWORD=$(DB_PASS) \
-		-e POSTGRES_DB=$(DB_NAME) \
-		-v $(PWD)/$(DB_NAME1)_data:/var/lib/postgresql/data:Z \
-		$(POSTGRES_IMAGE_NAME)
-	@echo "Database container started successfully!"
-
-# Target to run the database container
-#	$(MAKE) create_s3_mock_bucket 
-run-s3storage:
-	podman run -d --name $(S3STORAGE_NAME) \
-		--network $(NETWORK_NAME) \
-		--ip $(S3STORAGE_IP) \
-		--hostname $(S3STORAGE_NAME) \
-		-p 9000:9000 \
-		-v $(PWD)/$(S3STORAGE_NAME)_data:/data:Z \
-		$(S3STORAGE_IMAGE_NAME)
-	@echo "S3 storage container started successfully!"
-
 
 
 # Target to create and start all containers
