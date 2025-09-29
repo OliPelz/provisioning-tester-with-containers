@@ -1,17 +1,26 @@
 FROM python:3.11-slim
 
-#COPY keys_and_certs/thecompany_2023.crt /etc/pki/ca-trust/source/anchors/
-#COPY dnf.conf /etc/dnf/dnf.conf
-#ENV http_proxy="http://campus-proxy.rz.bankenit.de:8080"
-#ENV https_proxy="http://campus-proxy.rz.bankenit.de:8080"
-#ENV no_proxy=".fiducia.de,.bankenit.de,.fiduciagad.de,.gad.de,registry,.core,.dev,127.0.0.1,localhost"
-#ENV HTTP_PROXY="http://campus-proxy.rz.bankenit.de:8080"
-#ENV HTTPS_PROXY="http://campus-proxy.rz.bankenit.de:8080"
-#ENV NO_PROXY=".fiducia.de,.bankenit.de,.fiduciagad.de,.gad.de,registry,.core,.dev,127.0.0.1,localhost"
+########## if you build this container behind company closed proxy "bars", uncomment these
 
-# Install system dependencies
+# # Proxy env (apt respects these)
+# ENV http_proxy="http://campus-proxy.rz.bankenit.de:8080" \
+#     https_proxy="http://campus-proxy.rz.bankenit.de:8080" \
+#     no_proxy=".fiducia.de,.bankenit.de,.fiduciagad.de,.gad.de,registry,.core,.dev,127.0.0.1,localhost" \
+#     HTTP_PROXY="http://campus-proxy.rz.bankenit.de:8080" \
+#     HTTPS_PROXY="http://campus-proxy.rz.bankenit.de:8080" \
+#     NO_PROXY=".fiducia.de,.bankenit.de,.fiduciagad.de,.gad.de,registry,.core,.dev,127.0.0.1,localhost" \
+#     DEBIAN_FRONTEND=noninteractive
+# 
+# # Copy your cert to the Debian location (must be PEM .crt)
+# COPY keys_and_certs/thecompany_2023.crt /usr/local/share/ca-certificates/thecompany_2023.crt
+# 
+# # Register it into the system trust store
+# RUN update-ca-certificates
+
+########## end of company closed proxy "bars"
+
 RUN apt-get update && apt-get install -y \
-    curl iputils-ping wget jq telnet net-tools nmap jq \
+    ca-certificates curl iputils-ping wget jq telnet net-tools nmap jq \
     && rm -rf /var/lib/apt/lists/*
 
 # Install mitmproxy

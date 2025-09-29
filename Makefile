@@ -151,6 +151,10 @@ build_all_images: gen_ssh_container_keys ### build vm alike container image
 	@podman build -f Dockerfile.rocky --build-arg SSH_USER=$(SSH_USER) -t $(NAME2_IMAGE_NAME) .
 	@podman build -f Dockerfile.arch --build-arg SSH_USER=$(SSH_USER) -t $(NAME3_IMAGE_NAME) .
 
+.PHONY: debug_build_arch
+debug_build_arch:
+	@podman build -f Dockerfile.arch --build-arg SSH_USER=$(SSH_USER) -t $(NAME3_IMAGE_NAME) .
+
 # Target to create necessary volume directories
 make_volume_dirs:
 	@echo "Creating volume directories..."
@@ -323,36 +327,28 @@ ssh_login:  ### login to containers via ssh, use MYHOSTNAME= variable
 	@echo "$(BLUE_COLOR)Logging into container $(MYHOSTNAME) via SSH on port $(SSH_PORT)...$(NO_COLOR)" >&2
 	@ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i $(PRIV_KEY_PATH) -p $(SSH_PORT) $(SSH_USER)@localhost || { echo "$(RED_COLOR)Failed to log in via SSH$(NO_COLOR)" >&2; exit 1; }
 
-.PHONY: ssh_run_cmd 
 # example:
 # check if port 22 is open on container1 from container 2
 # $ make ssh_run_cmd MYHOSTNAME=hostname1 CMD="nc -vz $(make ssh_run_cmd MY HOSTNAME=hostname2 CMD=hostname) 22"
+# Also it takes care of $ in CMD, e.g. : make ssh_run_cmd MYHOSTNAME=my-ubuntu-machine CMD='echo "$PATH"'
 # Note: Instead of relying on inline quotes, base64 encode the command locally and decode it remotely.
+.PHONY: ssh_run_cmd
 ssh_run_cmd:  ### run cmd on container via ssh, MYHOSTNAME= and CMD=
 	@if [ -z "$(MYHOSTNAME)" ]; then \
-		echo "$(RED_COLOR)Error: MYHOSTNAME variable is not set. Use MYHOSTNAME=hostname1 or hostname3 or hostname2$(NO_COLOR)" >&2; \
-		exit 1; \
+		echo "$(RED_COLOR)Error: MYHOSTNAME variable is not set.$(NO_COLOR)" >&2; exit 1; \
 	fi
 	@if [ -z "$(CMD)" ]; then \
-		echo "$(RED_COLOR)Error: CMD variable is not set. Use make run_cmd MYHOSTNAME=$(NUM) CMD=\"your command\"$(NO_COLOR)" >&2; \
-		exit 1; \
-	fi
-	@if [ "$(PUB_KEY_PATH)" = "none" ]; then \
-		echo "$(RED_COLOR)Error: No SSH public key found. Run 'make gen_ssh_container_keys' or ensure $(PUB_KEY_PATH) exists$(NO_COLOR)" >&2; \
-		exit 1; \
+		echo "$(RED_COLOR)Error: CMD variable is not set. Use CMD='your command'$(NO_COLOR)" >&2; exit 1; \
 	fi
 	@if [ -z "$(SSH_PORT)" ]; then \
-		echo "$(RED_COLOR)Error: PORT variable is not set. This is likey a non existant MYHOSTNAME which you set to $(MYHOSTNAME)" >&2; \
-		exit 1; \
+		echo "$(RED_COLOR)Error: SSH_PORT not resolved for $(MYHOSTNAME)$(NO_COLOR)" >&2; exit 1; \
 	fi
 	@echo "$(BLUE_COLOR)Running command on container $(MYHOSTNAME) via SSH on port $(SSH_PORT)...$(NO_COLOR)" >&2
-	@ENCODED_CMD=$$(printf "%s" "$(CMD)" | base64 -w0) && \
-	ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-	   -i $(PRIV_KEY_PATH) \
-	   -p $(SSH_PORT) $(SSH_USER)@localhost \
-	   -- "base64 -d | bash" <<< "$$ENCODED_CMD" \
-	|| { echo "$(RED_COLOR)Failed to run command$(NO_COLOR)" >&2; exit 1; }
+	@printf '%s' '$(CMD)' | ./make_scripts/ssh_run_cmd.sh \
+		--host localhost --port "$(SSH_PORT)" --user "$(SSH_USER)" --identity "$(PRIV_KEY_PATH)"
 	@echo "$(GREEN_COLOR)Command executed successfully$(NO_COLOR)" >&2
+
+
 
 .PHONY: get_all_files_and_folders
 print_all_files_and_folders:  ### print all important files and folders on a linux system

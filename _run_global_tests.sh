@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-#set -x
+set -x
 this_script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # ---------- config ------------------------------------------------------------
@@ -121,24 +121,17 @@ log "  dry-run        : $dry_run"
 log "  hosts          : $(join_by ', ' "${HOSTS[@]}")"
 log "  ssh key        : ${LOCAL_KEY}"
 
-# ---------- run ---------------------------------------------------------------
-PROVISION_ESCAPED_ARGS="$(build_provision_args)"
-
-for host in "${HOSTS[@]}"; do
-  printf -v REMOTE_CMD "cd %q && ./provision %s" "/data/bash-provisioner" "$PROVISION_ESCAPED_ARGS"
-
-  MAKE_CMD=( make ssh_run_cmd MYHOSTNAME="$host" CMD="$REMOTE_CMD" )
-
-  [[ -f "$LOCAL_KEY" ]] && MAKE_CMD+=( SSH_KEY="$LOCAL_KEY" )
-
-  log "Running on host '${host}'..."
-  if "${MAKE_CMD[@]}"; then
-    log_ok "Host '${host}' finished successfully."
+# ----- run some global tests like testing the functions used heavily ----
+for my_host in "${HOSTS[@]}"; do
+  echo "[YXYYYYYYYYYYYYYYYYYY] test_package-mgr on ${my_host}"
+  exit 1
+  if make ssh_run_cmd SSH_KEY="${LOCAL_KEY}" MYHOSTNAME="$my_host" \
+     CMD="export PATH=/data/bash-provisioner/include_bins/shunit2:\$PATH && /data/bash-provisioner/provisions/tests/test_package-mgr"; then
+    log_ok "Host '${my_host}' finished successfully."
   else
-    log_error "Host '${host}' failed."
+    log_error "Host '${my_host}' failed."
     exit 1  # uncomment to fail-fast
   fi
 done
 
 log_ok "All done."
-
