@@ -1,0 +1,17 @@
+[Unit]
+Description=One-time first-boot provisioning (dnf update via proxy)
+After=network.target
+Wants=network.target
+ConditionPathExists=/var/lib/firstboot/needed
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/usr/local/bin/proxy.env
+ExecStart=/usr/local/bin/firstboot-provision.sh
+RemainAfterExit=yes
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=multi-user.target
+

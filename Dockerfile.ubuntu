@@ -1,11 +1,13 @@
-FROM ubuntu:24.04
+# ubuntu with systemd enabled
+FROM docker.io/jrei/systemd-ubuntu:22.04
 
-# User config (overridden via --build-arg MY_SSH_USER=...)
+# --- minimal user config (no network needed) ---
 ARG MY_SSH_USER
 ENV MY_SSH_USER=${MY_SSH_USER:-podmanuser}
 RUN [ -z "$MY_SSH_USER" ] && (echo "ERROR: MY_SSH_USER is not set!" && exit 1) || echo "Using MY_SSH_USER=$MY_SSH_USER"
 
 ######### beginning of the free internet access ##############
+# Explicitly clear any build-time proxies
 ARG http_proxy=   ARG https_proxy=   ARG no_proxy=
 ARG HTTP_PROXY=   ARG HTTPS_PROXY=   ARG NO_PROXY=
 ENV http_proxy= \
@@ -16,68 +18,36 @@ ENV http_proxy= \
     NO_PROXY=
 ##############################################################
 
-# ---- APT: extend timeouts for slow proxy ----
-# Similar intent to dnf.conf timeout=999999
-# ---- APT: extend timeouts for slow proxy ----
-RUN mkdir -p /etc/apt/apt.conf.d && \
-    cat > /etc/apt/apt.conf.d/95-timeouts.conf <<EOF
-Acquire::http::Timeout "999999";
-Acquire::https::Timeout "999999";
-Acquire::ftp::Timeout "999999";
-Acquire::Retries "10";
-EOF
+# Optional proxy env (used at runtime by our wrappers)
+COPY ./docker-proxy.env /usr/local/bin/proxy.env
 
-ENV DEBIAN_FRONTEND=noninteractive
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-      systemd \
-      openssh-server \
-      firewalld \
-      cron \
-      python3 \
-      bash \
-      vim \
-      sudo \
-      rsync \
-      curl \
-      ca-certificates \
-    && apt-get clean && rm -rf /var/lib/apt/lists/*
+# Your proxy helpers & pm wrapper (no network)
+COPY bash-provisioner/provisions/proxy_wrappers.sh /usr/local/bin/proxy_wrappers.sh
+RUN chmod 644 /usr/local/bin/proxy_wrappers.sh
+COPY bash-provisioner/provisions/package-mgr-v2 /usr/local/bin/package-mgr-v2
+RUN chmod +x /usr/local/bin/package-mgr-v2
 
-# Enable services
-RUN systemctl enable ssh && \
-    systemctl enable firewalld && \
-    systemctl enable cron
+# First-boot provision bits (all runtime, after network is up)
+COPY firstboot-provision-ubuntu.sh /usr/local/bin/firstboot-provision.sh
+RUN chmod +x /usr/local/bin/firstboot-provision.sh
+COPY firstboot-provision-ubuntu.service /etc/systemd/system/firstboot-provision.service
 
-# SSH hardening
-RUN sed -i 's/#PasswordAuthentication yes/PasswordAuthentication no/' /etc/ssh/sshd_config && \
-    sed -i 's/#PubkeyAuthentication yes/PubkeyAuthentication yes/' /etc/ssh/sshd_config && \
-    sed -i 's/#AuthorizedKeysFile .ssh\/authorized_keys/AuthorizedKeysFile .ssh\/authorized_keys/' /etc/ssh/sshd_config
+# Your small config helper (offline)
+COPY configure-ubuntu.sh /usr/local/bin/configure.sh
+RUN chmod +x /usr/local/bin/configure.sh
 
-# User + sudoers
-RUN useradd -m -s /bin/bash ${MY_SSH_USER} && \
-    mkdir -p /home/${MY_SSH_USER}/.ssh && \
-    chown ${MY_SSH_USER}:${MY_SSH_USER} /home/${MY_SSH_USER}/.ssh && \
-    chmod 700 /home/${MY_SSH_USER}/.ssh && \
-    echo "${MY_SSH_USER} ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/${MY_SSH_USER} && \
-    chmod 440 /etc/sudoers.d/${MY_SSH_USER}
+# Minimal entrypoint that wires the first-boot provisioning (runtime)
+COPY entrypoint-ubuntu.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
 
-# Proxy exports
-#ENV http_proxy="http://webproxycache:3128"
-#RUN echo "export http_proxy=${http_proxy}"  >> /home/${MY_SSH_USER}/.bashrc && \
-#    echo "export https_proxy=${http_proxy}" >> /home/${MY_SSH_USER}/.bashrc && \
-#    echo "export http_proxy=${http_proxy}"  >> /root/.bashrc && \
-#    echo "export https_proxy=${http_proxy}" >> /root/.bashrc
+# First-boot marker so the service runs once at first start
+RUN mkdir -p /var/lib/firstboot && touch /var/lib/firstboot/needed && \
+    systemctl enable firstboot-provision.service
 
-# Tests + CA trust
+# Optional: tests (no network)
 RUN mkdir /tests
 COPY test_mitmproxy_script.sh /tests
 RUN chmod +x /tests/*
-RUN update-ca-certificates
-
-# Bootstrap scripts
-COPY configure.sh /usr/local/bin/configure.sh
-COPY entrypoint.sh /usr/local/bin/entrypoint.sh
-RUN chmod +x /usr/local/bin/configure.sh /usr/local/bin/entrypoint.sh
 
 EXPOSE 22
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

@@ -139,7 +139,7 @@ gen_ssl_cert: ### generate a self-signed ssl cert
 get_proxy_cert:
 	@echo "==> Retrieving existing webproxycache SSL cert from built image"
 	@podman run $(WEBPROXYCACHE_IMAGE_NAME) cat /root/.mitmproxy/mitmproxy-ca-cert.pem > $(PWD)/keys_and_certs/mitmproxy-ca-cert.pem \
-	     || { echo "$(RED_COLOR)Failed to run Proxycache container$(NO_COLOR)" >&2; exit 1; };
+	     || { echo "$(RED_COLOR)Failed to run Proxycache container$(NO_COLOR) while trying to fetch mitmproxy-ca-cert.pem" >&2; exit 1; };
 
 .PHONY: setup-network
 setup-network:  ### setup podman network which holds all our containers
@@ -161,27 +161,21 @@ build_webproxycache:
 .PHONY: build_arch
 build_arch:
 	podman build \
-		--network=slirp4netns \
-		-f Dockerfile.arch \
-		--build-arg MY_SSH_USER=$(MY_SSH_USER) \
-		-t $(NAME3_IMAGE_NAME) .
-
-.PHONY: build_distro_images
-build_distro_images:  build_webproxycache run_webproxycache
-	@$(MAKE) build_arch
-	
-
+                --network=slirp4netns \
+                -f Dockerfile.arch \
+                --build-arg MY_SSH_USER=$(MY_SSH_USER) \
+                -t $(NAME3_IMAGE_NAME) .
 
 
 .PHONY: build_all_images
-#@podman build -f Dockerfile.ubuntu --build-arg MY_SSH_USER=$(MY_SSH_USER) -t $(NAME1_IMAGE_NAME) .
-#@podman build -f Dockerfile.rocky --build-arg MY_SSH_USER=$(MY_SSH_USER) -t $(NAME2_IMAGE_NAME) .
 build_all_images: gen_ssh_container_keys ### build vm alike container image
 	@echo "🔨 Building custom images with systemd and sshd..."
-	@podman build -f Dockerfile.webproxycache -t $(WEBPROXYCACHE_IMAGE_NAME) .
-	@$(MAKE) run-webproxycache
+	@$(MAKE) build_webproxycache
+	@$(MAKE) get_proxy_cert
 	@$(MAKE) render_docker_template
 	@$(MAKE) build_arch
+	@podman build -f Dockerfile.ubuntu --build-arg MY_SSH_USER=$(MY_SSH_USER) -t $(NAME1_IMAGE_NAME) .
+	@podman build -f Dockerfile.rocky --build-arg MY_SSH_USER=$(MY_SSH_USER) -t $(NAME2_IMAGE_NAME) .
 
 # Target to create necessary volume directories
 make_volume_dirs:
@@ -200,7 +194,7 @@ render_package_mgr_env_template:
 	render_template $(PWD)/loadbalancer.conf.tpl $(PWD)/loadbalancer.conf
 
 render_docker_template:
-	@MY_USE_MITM_INTERCEPT_PROXY_CERT=true \
+	@MY_CERT_BASE64_STR="$$(cat $(PROXY_CERT_BASE_PATH)/mitmproxy-ca-cert.pem | base64 -w0)" \
 	MY_PROXY_URL='$(MY_PROXY_URL)' \
 	MY_NO_PROXY_STR='$(MY_NO_PROXY_STR)' \
 	MY_DISABLE_IPV6_BOOL='$(MY_DISABLE_IPV6_BOOL)' \
@@ -210,8 +204,7 @@ render_docker_template:
 ## container lifecycle tasks:
 
 # Target to run the web proxy cache container
-# important: you need to make 3128 host accessible! so that other containers can access during build time
-run_webproxycache:
+run-webproxycache:
 	podman run -d --name $(WEBPROXYCACHE_NAME1) \
 		--network $(NETWORK_NAME) \
 		--ip $(WEBPROXYCACHE_IP1) \
@@ -223,7 +216,7 @@ run_webproxycache:
 	@echo "Web proxy cache container started successfully!"
 
 # Target to run the application container (NAME1)
-run_ubuntu:
+run-ubuntu:
 	podman run -d --name $(NAME1) \
 		--network $(NETWORK_NAME) \
 		--ip $(IP1) \
@@ -242,7 +235,7 @@ run_ubuntu:
 	@echo "Application container $(NAME1) started successfully!"
 
 # Target to run the application container (NAME2)
-run_rocky:
+run-rocky:
 	podman run -d --name $(NAME2) \
 		--network $(NETWORK_NAME) \
 		--ip $(IP2) \
@@ -258,7 +251,7 @@ run_rocky:
 	@echo "Application container $(NAME2) started successfully!"
 
 # Target to run the application container (NAME3)
-run_arch:
+run-arch:
 	podman run -d --name $(NAME3) \
 		--network $(NETWORK_NAME) \
 		--ip $(IP3) \
