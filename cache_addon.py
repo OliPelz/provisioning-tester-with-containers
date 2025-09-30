@@ -1,4 +1,4 @@
-# version 0.0.4 - Robust writes + filename-based caching for Arch/Ubuntu package data
+# version 0.1.0 — Safe cache keys for APT & Arch + robust writes
 
 import os
 import re
@@ -10,76 +10,31 @@ from urllib.parse import urlparse, urlunparse
 from mitmproxy import http
 from mitmproxy.http import Response
 
-# Use absolute cache dir; allow override via env
+# Config -----------------------------------------------------------------------
 CACHE_DIR = os.path.abspath(os.environ.get("CACHE_DIR", "./the_cache_dir"))
+os.makedirs(CACHE_DIR, exist_ok=True)
 
-# ------------------------------------------------------------------------------
-# Helpers for "cache by filename" coverage
-# ------------------------------------------------------------------------------
-
-# Arch repo db/files patterns: core.db, extra.files, community.db.tar.gz, ... with optional .sig
-_ARCH_DB_RE = re.compile(
-    r'^(core|extra|community|multilib)\.(db|files)'
-    r'(?:\.tar\.(gz|xz|zst))?'
-    r'(?:\.sig)?$',
+# Patterns ---------------------------------------------------------------------
+# Arch repo db/files like: .../<repo>/os/<arch>/(core|extra|community|multilib).(db|files)[.tar.{gz,xz,zst}][.sig]
+_ARCH_REPO_RE = re.compile(
+    r"/(?P<repo>core|extra|community|multilib)/os/(?P<arch>[^/]+)/(?P<file>(?:core|extra|community|multilib)\.(?:db|files)(?:\.tar\.(?:gz|xz|zst))?(?:\.sig)?)$",
     re.IGNORECASE,
 )
 
-# Recognize Debian/Ubuntu APT metadata basenames (with optional compression)
-# e.g. Packages, Packages.gz, Packages.xz, Sources{,.gz,.xz}, Contents-*.gz, etc.,
-# plus Release / InRelease / Release.gpg.
-_APT_META_BASE = (
-    "release", "inrelease", "release.gpg",
-)
-_APT_PREFIXES = (
-    "packages", "sources", "contents-",
-)
+# APT metadata basenames (case-insensitive)
+_APT_META_BASE = {"release", "inrelease", "release.gpg"}
+_APT_META_PREFIXES = ("packages", "sources", "contents-")
 _COMPRESSED_SUFFIXES = ("", ".gz", ".xz", ".bz2", ".lz4", ".zst")
 
-# File extensions that should always be cached by filename (package artifacts)
+# Artifacts that are safe to cache by filename
 _ALWAYS_BY_FILENAME_EXTS = (
-    ".rpm",
     ".deb", ".ddeb",
+    ".rpm",
     ".pkg.tar.zst", ".pkg.tar.zst.sig",
-    ".sig",  # keep .sig by filename (common for both Arch & APT)
+    ".sig",
 )
 
-def _is_arch_or_apt_filename(url_norm: str) -> bool:
-    """
-    Decide whether this URL points to Arch/Ubuntu package data we want to cache by filename.
-    """
-    path = urlparse(url_norm).path
-    bn = os.path.basename(path)
-    bn_l = bn.lower()
-
-    # 1) Obvious artifacts by extension
-    for ext in _ALWAYS_BY_FILENAME_EXTS:
-        if bn_l.endswith(ext):
-            return True
-
-    # 2) Arch repository DB/files family (with optional tar.* and .sig)
-    if _ARCH_DB_RE.match(bn_l):
-        return True
-
-    # 3) APT metadata: Release/InRelease/Release.gpg
-    if bn_l in _APT_META_BASE:
-        return True
-
-    # 4) APT metadata: Packages*, Sources*, Contents-*, possibly compressed
-    # We match basenames starting with our prefixes and ending with any known compression suffix (or none).
-    for prefix in _APT_PREFIXES:
-        if bn_l.startswith(prefix):
-            # No further filter: filename-only caching as requested
-            # (beware: "Packages.gz" collisions across different suites/arches are possible)
-            return True
-
-    return False
-
-# ------------------------------------------------------------------------------
-# Core cache helpers
-# ------------------------------------------------------------------------------
-
-# Per-URL locks to avoid concurrent writes
+# Locks ------------------------------------------------------------------------
 _locks = {}
 _locks_guard = threading.Lock()
 def _lock_for(key: str) -> threading.Lock:
@@ -89,53 +44,103 @@ def _lock_for(key: str) -> threading.Lock:
             _locks[h] = threading.Lock()
         return _locks[h]
 
+# Helpers ----------------------------------------------------------------------
 def normalize_url(url: str) -> str:
-    parsed = urlparse(url)
-    # drop fragments; leave query intact
-    path = parsed.path or ""
+    p = urlparse(url)
+    path = p.path or ""
     if path.endswith("/"):
         path += "index.html"
-    new_parsed = parsed._replace(path=path, fragment="")
-    return urlunparse(new_parsed)
+    return urlunparse(p._replace(path=path, fragment=""))
 
-def _hashed_name(url_norm: str, suffix: str) -> str:
-    """
-    Return the on-disk name (without directory) for a given normalized URL.
-
-    For Arch & Ubuntu package data we cache by filename to maximize reuse across mirrors.
-    For everything else we use a hash of the full URL.
-    """
-    parsed = urlparse(url_norm)
-    filename = os.path.basename(parsed.path)
-
-    if _is_arch_or_apt_filename(url_norm):
-        # Cache by filename only (risk of collisions is accepted per user request).
-        return f"{filename}{suffix}"
-
-    # Fallback: URL-hash-based name
-    return f"{hashlib.sha256(url_norm.encode()).hexdigest()}{suffix}"
-
-def cache_path(url: str) -> str:
-    return os.path.join(CACHE_DIR, _hashed_name(normalize_url(url), ".cache"))
-
-def headers_path(url: str) -> str:
-    return os.path.join(CACHE_DIR, _hashed_name(normalize_url(url), ".headers.json"))
+def _sha(url_norm: str) -> str:
+    return hashlib.sha256(url_norm.encode("utf-8")).hexdigest()
 
 def _ensure_parent(path: str):
     parent = os.path.dirname(path)
     if parent and not os.path.isdir(parent):
         os.makedirs(parent, exist_ok=True)
 
-# ------------------------------------------------------------------------------
-# Addon
-# ------------------------------------------------------------------------------
+def _is_pkg_artifact(basename_lower: str) -> bool:
+    return any(basename_lower.endswith(ext) for ext in _ALWAYS_BY_FILENAME_EXTS)
 
+def _is_apt_metadata_basename(basename_lower: str) -> bool:
+    if basename_lower in _APT_META_BASE:
+        return True
+    for pref in _APT_META_PREFIXES:
+        if basename_lower.startswith(pref):
+            # suffix check optional — allow any compression/no-compression
+            return True
+    return False
+
+def _apt_rel_subpath(path: str) -> str | None:
+    """
+    Return a safe cache subpath for APT metadata:
+      - Prefer path under '.../dists/...'
+      - Keep 'by-hash/...' intact (unique)
+    Returns None if not an apt dists path.
+    """
+    low = path.lower()
+    i = low.find("/dists/")
+    if i == -1:
+        return None
+    return path[i+1:]  # drop leading slash, keep 'dists/...'
+
+def _arch_rel_subpath(path: str) -> str | None:
+    """
+    Return 'arch/<repo>/<arch>/<file>' for Arch db/files, else None.
+    """
+    m = _ARCH_REPO_RE.search(path)
+    if not m:
+        return None
+    repo = m.group("repo")
+    arch = m.group("arch")
+    file = m.group("file")
+    return os.path.join("arch", repo, arch, file)
+
+def _cache_relpath_for(url_norm: str) -> str:
+    """
+    Build a relative path (under CACHE_DIR) that avoids APT basename collisions
+    but still allows reuse across mirrors for safe cases.
+    """
+    p = urlparse(url_norm)
+    path = p.path or "/"
+    bn = os.path.basename(path)
+    bn_l = bn.lower()
+
+    # 1) Package artifacts: by filename only (versioned).
+    if _is_pkg_artifact(bn_l):
+        return os.path.join("pkg", bn)
+
+    # 2) Arch repo db/files: repo+arch+filename
+    arch_rel = _arch_rel_subpath(path)
+    if arch_rel:
+        return arch_rel
+
+    # 3) APT metadata under /dists/...
+    #    - by-hash paths unique already
+    #    - other metadata: use the subpath under /dists/ to encode suite/component/arch
+    if _is_apt_metadata_basename(bn_l) or any(bn_l.startswith(pref) for pref in _APT_META_PREFIXES):
+        apt_rel = _apt_rel_subpath(path)
+        if apt_rel:
+            return os.path.join("apt", apt_rel)
+
+    # 4) Fallback: hash of full normalized URL
+    return os.path.join("misc", _sha(url_norm))
+
+def _body_path(url: str) -> str:
+    return os.path.join(CACHE_DIR, _cache_relpath_for(normalize_url(url)) + ".cache")
+
+def _headers_path(url: str) -> str:
+    return os.path.join(CACHE_DIR, _cache_relpath_for(normalize_url(url)) + ".headers.json")
+
+# Addon ------------------------------------------------------------------------
 class CacheAddon:
     def __init__(self):
         self.cache_dir = CACHE_DIR
-        os.makedirs(self.cache_dir, exist_ok=True)  # ensure at init
+        os.makedirs(self.cache_dir, exist_ok=True)
         print(f"[CACHE ADDON] Initialized with cache dir: {self.cache_dir}")
 
+    # Log helpers
     def client_connected(self, client):
         print(f"[CLIENT CONNECT] {client.peername} connected at {time.strftime('%H:%M:%S')}")
 
@@ -143,21 +148,24 @@ class CacheAddon:
         print(f"[CLIENT DISCONNECT] {client.peername} disconnected at {time.strftime('%H:%M:%S')}")
 
     def server_connected(self, data):
-        print(f"[SERVER CONNECT] Successfully connected to {data.server.peername} at {time.strftime('%H:%M:%S')}")
+        try:
+            peer = getattr(data.server, "peername", None)
+            print(f"[SERVER CONNECT] Successfully connected to {peer} at {time.strftime('%H:%M:%S')}")
+        except Exception:
+            pass
 
     def error(self, flow):
         print(f"[ERROR] {flow.error} at {time.strftime('%H:%M:%S')}")
-        if hasattr(flow, 'request') and flow.request:
+        if hasattr(flow, "request") and flow.request:
             print(f"[ERROR] Request was: {flow.request.method} {flow.request.url}")
 
     def request(self, flow: http.HTTPFlow):
         if flow.request.method.upper() != "GET":
-            print(f"[NON-GET] Skipping {flow.request.method} {flow.request.url}")
             return
 
         url_norm = normalize_url(flow.request.url)
-        body_path = cache_path(flow.request.url)
-        hdrs_path = headers_path(flow.request.url)
+        body_path = _body_path(flow.request.url)
+        hdrs_path = _headers_path(flow.request.url)
 
         print(f"[REQUEST] {time.strftime('%H:%M:%S')} Checking cache: {url_norm}")
         print(f"[REQUEST] Cache path: {body_path}")
@@ -169,11 +177,11 @@ class CacheAddon:
                 with open(hdrs_path, "r") as f:
                     cached_headers = json.load(f)
 
-                # Normalize headers and mark HIT
-                cached_headers = {k: v for k, v in cached_headers.items()}
-                cached_headers["x-cache-status"] = "HIT"
+                # Keep server headers except hop-by-hop; add HIT marker
+                headers = {k: v for k, v in cached_headers.items()}
+                headers["x-cache-status"] = "HIT"
 
-                flow.response = Response.make(200, cached_data, cached_headers)
+                flow.response = Response.make(200, cached_data, headers)
                 flow.metadata["from_cache"] = True
                 print(f"[CACHE HIT] {url_norm} ({len(cached_data)} bytes)")
                 return
@@ -185,38 +193,38 @@ class CacheAddon:
     def response(self, flow: http.HTTPFlow):
         if flow.request.method.upper() != "GET":
             return
-
+        if not flow.response:
+            return
         if flow.metadata.get("from_cache", False):
             print(f"[CACHE] Skipping re-cache for {flow.request.url}")
             return
-
-        if not flow.response:
-            return
-
         if flow.response.status_code != 200:
             print(f"[RESPONSE] Non-200 {flow.response.status_code} for {flow.request.url} — not caching")
             return
 
         url_norm = normalize_url(flow.request.url)
-        body_path = cache_path(flow.request.url)
-        hdrs_path = headers_path(flow.request.url)
+        body_path = _body_path(flow.request.url)
+        hdrs_path = _headers_path(flow.request.url)
         lock = _lock_for(url_norm)
 
-        print(f"[RESPONSE] {time.strftime('%H:%M:%S')} Caching: {url_norm} ({len(flow.response.content)} bytes)")
+        content = flow.response.get_content(strict=False)  # safe for encoded bodies
 
+        print(f"[RESPONSE] {time.strftime('%H:%M:%S')} Caching: {url_norm} ({len(content)} bytes)")
         try:
             with lock:
-                # Ensure parent dir for both tmp files (robust against pruning/races)
+                # Body (atomic)
                 tmp_body = body_path + ".tmp"
                 _ensure_parent(tmp_body)
                 with open(tmp_body, "wb") as f:
-                    f.write(flow.response.content)
+                    f.write(content)
                 os.replace(tmp_body, body_path)
 
+                # Headers (atomic) — preserve server headers, strip hop-by-hop
                 headers_to_save = dict(flow.response.headers)
-                # Strip hop-by-hop headers
-                for h in ["Content-Length", "Transfer-Encoding", "Connection", "Keep-Alive",
-                          "Proxy-Authenticate", "Proxy-Authorization", "TE", "Trailer", "Upgrade"]:
+                for h in [
+                    "Content-Length", "Transfer-Encoding", "Connection", "Keep-Alive",
+                    "Proxy-Authenticate", "Proxy-Authorization", "TE", "Trailer", "Upgrade",
+                ]:
                     headers_to_save.pop(h, None)
                 headers_to_save["x-cache-status"] = "MISS"
 
@@ -226,6 +234,7 @@ class CacheAddon:
                     json.dump(headers_to_save, f)
                 os.replace(tmp_hdrs, hdrs_path)
 
+                # Mark outgoing response
                 flow.response.headers["x-cache-status"] = "MISS"
                 print(f"[CACHE SAVED] {url_norm}")
         except Exception as e:

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+# log to file and stdout/stderr (journald will capture stdout/stderr)
 mkdir -p /var/log
 exec > >(tee -a /var/log/firstboot.log) 2>&1
 

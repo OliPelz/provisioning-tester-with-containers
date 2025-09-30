@@ -44,6 +44,19 @@ RUN mkdir -p /var/lib/firstboot && touch /var/lib/firstboot/needed && \
     ln -sf /etc/systemd/system/firstboot-provision.service \
            /etc/systemd/system/multi-user.target.wants/firstboot-provision.service
 
+# Make sure user sessions are allowed at multi-user.target
+# Note: this usually gets rid of :
+# "System is booting up. Unprivileged users are not permitted to log in yet. Please come back later. For technical details, see pam_nologin(8)."
+RUN mkdir -p /etc/systemd/system/multi-user.target.wants && \
+    if [ -f /usr/lib/systemd/system/systemd-user-sessions.service ]; then \
+        ln -sf /usr/lib/systemd/system/systemd-user-sessions.service \
+               /etc/systemd/system/multi-user.target.wants/systemd-user-sessions.service ; \
+    fi && \
+    if [ -f /lib/systemd/system/systemd-user-sessions.service ]; then \
+        ln -sf /lib/systemd/system/systemd-user-sessions.service \
+               /etc/systemd/system/multi-user.target.wants/systemd-user-sessions.service ; \
+    fi
+
 # Optional: tests (no network)
 RUN mkdir /tests
 COPY test_mitmproxy_script.sh /tests
