@@ -7,7 +7,15 @@ testing bash-provisioner on multiple platforms
 
 since arch is rolling update, the image contains old GPG keys and outdated
 mirrorlist.
-in order to regen mirrorlist goto official mirrorlist generator:
+in order to regenerage latest mirrorlist lets install all the GPG keychain
+from the latest arch keyring package we download using this instruction:  
+DOWNLOAD_ARCH_PACKAGE.md
+Note: you should download the latest package from time to time when you rebuild the arch image.
+
+Also we need to get latest mirrorlist, as it can contain outdated mirrors from time to time, 
+so everytime you rebuild the image you should fetch latest mirrorlist first:
+ 
+ goto official mirrorlist generator:
 
 https://archlinux.org/mirrorlist/
 

@@ -1,16 +1,16 @@
 FROM rockylinux:9
 
 # Create a non-root user (default: podmanuser) and set up SSH
-# Note: this can be overwritten by --build-arg SSH_USER=xxx
+# Note: this can be overwritten by --build-arg MY_SSH_USER=xxx
 #       and will only be set to its default (podmanuser)
 #       if the build-arg is not defined
 # Note2: ARG is a build-time parameter, only valid till build time
-ARG SSH_USER
+ARG MY_SSH_USER
 # convert the build time var to a runtime-var so it can be seen
 # by our entrypoints and CMDs!!!
-ENV SSH_USER=${SSH_USER:-podmanuser}
+ENV MY_SSH_USER=${MY_SSH_USER:-podmanuser}
 
-RUN [ -z "$SSH_USER" ] && (echo "ERROR: SSH_USER is not set!" && exit 1) || echo "Using SSH_USER=$SSH_USER"
+RUN [ -z "$MY_SSH_USER" ] && (echo "ERROR: MY_SSH_USER is not set!" && exit 1) || echo "Using MY_SSH_USER=$MY_SSH_USER"
 
 COPY keys_and_certs/thecompany_2023.crt /etc/pki/ca-trust/source/anchors/
 COPY dnf.conf /etc/dnf/dnf.conf
@@ -55,21 +55,21 @@ RUN sed -i 's/#PasswordAuthentication yes/PasswordAuthentication no/' /etc/ssh/s
     sed -i 's/#PubkeyAuthentication yes/PubkeyAuthentication yes/' /etc/ssh/sshd_config && \
     sed -i 's/#AuthorizedKeysFile .ssh\/authorized_keys/AuthorizedKeysFile .ssh\/authorized_keys/' /etc/ssh/sshd_config
 
-RUN useradd -m -s /bin/bash ${SSH_USER} && \
-    mkdir -p /home/${SSH_USER}/.ssh && \
-    chown ${SSH_USER}:${SSH_USER} /home/${SSH_USER}/.ssh && \
-    chmod 700 /home/${SSH_USER}/.ssh && \
-    echo "${SSH_USER} ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers.d/${SSH_USER}
+RUN useradd -m -s /bin/bash ${MY_SSH_USER} && \
+    mkdir -p /home/${MY_SSH_USER}/.ssh && \
+    chown ${MY_SSH_USER}:${MY_SSH_USER} /home/${MY_SSH_USER}/.ssh && \
+    chmod 700 /home/${MY_SSH_USER}/.ssh && \
+    echo "${MY_SSH_USER} ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers.d/${MY_SSH_USER}
 
 
 # Add proxy variables, using ${HTTP_PROXY} and ${NO_PROXY}, to both the user's and root's .bashrc
 # so we can access those vars via ssh login on runtime
-RUN echo "export HTTP_PROXY=${HTTP_PROXY}" >> /home/${SSH_USER}/.bashrc && \
-    echo "export HTTPS_PROXY=${HTTP_PROXY}" >> /home/${SSH_USER}/.bashrc && \
-    echo "export http_proxy=${HTTP_PROXY}" >> /home/${SSH_USER}/.bashrc && \
-    echo "export https_proxy=${HTTP_PROXY}" >> /home/${SSH_USER}/.bashrc && \
-    echo "export NO_PROXY=${NO_PROXY}" >> /home/${SSH_USER}/.bashrc && \
-    echo "export no_proxy=${NO_PROXY}" >> /home/${SSH_USER}/.bashrc && \
+RUN echo "export HTTP_PROXY=${HTTP_PROXY}" >> /home/${MY_SSH_USER}/.bashrc && \
+    echo "export HTTPS_PROXY=${HTTP_PROXY}" >> /home/${MY_SSH_USER}/.bashrc && \
+    echo "export http_proxy=${HTTP_PROXY}" >> /home/${MY_SSH_USER}/.bashrc && \
+    echo "export https_proxy=${HTTP_PROXY}" >> /home/${MY_SSH_USER}/.bashrc && \
+    echo "export NO_PROXY=${NO_PROXY}" >> /home/${MY_SSH_USER}/.bashrc && \
+    echo "export no_proxy=${NO_PROXY}" >> /home/${MY_SSH_USER}/.bashrc && \
     echo "export HTTP_PROXY=${HTTP_PROXY}" >> /root/.bashrc && \
     echo "export HTTPS_PROXY=${HTTP_PROXY}" >> /root/.bashrc && \
     echo "export http_proxy=${HTTP_PROXY}" >> /root/.bashrc && \

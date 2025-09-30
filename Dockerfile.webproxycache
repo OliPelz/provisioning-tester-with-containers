@@ -19,6 +19,17 @@ FROM python:3.11-slim
 
 ########## end of company closed proxy "bars"
 
+######### beginning of the free internet access ##############
+ARG http_proxy=   ARG https_proxy=   ARG no_proxy=
+ARG HTTP_PROXY=   ARG HTTPS_PROXY=   ARG NO_PROXY=
+ENV http_proxy= \
+    https_proxy= \
+    HTTP_PROXY= \
+    HTTPS_PROXY= \
+    no_proxy= \
+    NO_PROXY=
+##############################################################
+
 RUN apt-get update && apt-get install -y \
     ca-certificates curl iputils-ping wget jq telnet net-tools nmap jq \
     && rm -rf /var/lib/apt/lists/*
@@ -51,7 +62,7 @@ RUN mkdir -p ~/.mitmproxy &&  timeout 5 mitmdump --set confdir=~/.mitmproxy || t
 #     "--listen-port", "3128",
 #     "--listen-host", "0.0.0.0" ]
 
-
+RUN env | grep -i proxy || echo "no proxies during build"
 
 CMD ["mitmdump", \ 
      "-s", "/app/cache_addon.py", \

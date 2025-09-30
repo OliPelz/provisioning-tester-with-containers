@@ -13,7 +13,7 @@ CONTAINER_NAME="test-container"
 SSH_PORT="2222"
 LOCAL_KEY="./keys_and_certs/id_ed25519_for_containers.pub"
 
-SSH_USER="${SSH_USER:-xgthaboradm}"
+MY_SSH_USER="${MY_SSH_USER:-xgthaboradm}"
 
 
 #rm -rf /tmp/awx-harbor-cluster-v2
@@ -37,8 +37,8 @@ for i in rreeimreg002 oreeimreg002 xreeimreg002; do
    # mocking plswus firewall-specific systemd service file, which is a dummy
    make rsync_copy_cmd_sudo MYHOSTNAME=$i FROM="firewall-specific.service" TO="/etc/systemd/system/firewall-specific.service"
    
-   # we mount /home/${SSH_USER}/ansible_temp as a volume, but its mounted as root in container, we need to change this 
-   #make ssh_run_cmd MYHOSTNAME=$i CMD="sudo chown ${SSH_USER}:${SSH_USER} /home/${SSH_USER}/ansible_temp"
+   # we mount /home/${MY_SSH_USER}/ansible_temp as a volume, but its mounted as root in container, we need to change this 
+   #make ssh_run_cmd MYHOSTNAME=$i CMD="sudo chown ${MY_SSH_USER}:${MY_SSH_USER} /home/${MY_SSH_USER}/ansible_temp"
 done
 
 # make a snapshot of current state after installation

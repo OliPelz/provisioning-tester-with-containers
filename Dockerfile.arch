@@ -1,30 +1,24 @@
 FROM archlinux:latest
 
-# User config (overridden via --build-arg SSH_USER=...)
-ARG SSH_USER
-ENV SSH_USER=${SSH_USER:-podmanuser}
+# User config (overridden via --build-arg MY_SSH_USER=...)
+ARG MY_SSH_USER
+ENV MY_SSH_USER=${MY_SSH_USER:-podmanuser}
 
-ARG http_proxy
-ENV http_proxy="http://webproxycache:3128"
+RUN [ -z "$MY_SSH_USER" ] && (echo "ERROR: MY_SSH_USER is not set!" && exit 1) || echo "Using MY_SSH_USER=$MY_SSH_USER"
 
-ARG no_proxy
-ENV no_proxy=${no_proxy}
+######### beginning of the free internet access ##############
+ARG http_proxy=   ARG https_proxy=   ARG no_proxy=
+ARG HTTP_PROXY=   ARG HTTPS_PROXY=   ARG NO_PROXY=
+ENV http_proxy= \
+    https_proxy= \
+    HTTP_PROXY= \
+    HTTPS_PROXY= \
+    no_proxy= \
+    NO_PROXY=
+##############################################################
 
-ARG CERT_BASE64_STRING
-ENV CERT_BASE64_STRING=${CERT_BASE64_STRING}
-
-RUN [ -z "$SSH_USER" ] && (echo "ERROR: SSH_USER is not set!" && exit 1) || echo "Using SSH_USER=$SSH_USER"
-
-
-# Copy the script into the image
-COPY setup-proxy.sh /usr/local/bin/setup-proxy.sh
-
-# Make the script executable
-RUN chmod +x /usr/local/bin/setup-proxy.sh
-
-# Run the script
-RUN /usr/local/bin/setup-proxy.sh
-
+# # Copy the proxy env into the container
+COPY ./docker-proxy.env /usr/local/bin/proxy.env
 
 # ---- pacman: relax/disable download timeout for slow proxy ----
 # Pacman doesn’t take a numeric timeout like dnf/apt; use DisableDownloadTimeout.
@@ -33,6 +27,16 @@ RUN sed -i 's/^#ParallelDownloads.*/ParallelDownloads = 5/' /etc/pacman.conf || 
     (grep -q '^DisableDownloadTimeout' /etc/pacman.conf \
       && sed -i 's/^#\?DisableDownloadTimeout/DisableDownloadTimeout/' /etc/pacman.conf \
       || sed -i '/^\[options\]/a DisableDownloadTimeout' /etc/pacman.conf)
+
+
+# for linux distribution package manager i use a wrapper called package-mgr-v2 (from my utility repo) which wraps
+# proxy and cert usage for pacman
+# for other utils (like curl) using proxy i use various function wrappers from proxy_wrappers.sh collection (also from my utilitiy repo)
+
+COPY bash-provisioner/provisions/proxy_wrappers.sh /usr/local/bin/proxy_wrappers.sh
+RUN chmod 644 /usr/local/bin/proxy_wrappers.sh
+COPY bash-provisioner/provisions/package-mgr-v2 /usr/local/bin/package-mgr-v2
+RUN chmod +x /usr/local/bin/package-mgr-v2
 
 # we need to fix outdated mirrorlist and gpg keys otherwise we will
 # get infamous GPGME error messages
@@ -45,35 +49,41 @@ RUN chmod 644 /etc/pacman.d/mirrorlist
 
 
 
-# test scripts go here
-RUN mkdir /tests
-COPY test_mitmproxy_script.sh /tests
-RUN chmod +x /tests/*
-
-# update latest keys and make full system update
 # due to arch is a rolling update some repo sources and gpg keys are outdated
-# here is how to fix:
-RUN rm -rf /etc/pacman.d/gnupg /var/lib/pacman/sync && \
-    pacman-key --init && \
-    pacman-key --populate && \
-    pacman-key --refresh-keys || true && \
-    pacman -Sy archlinux-keyring --noconfirm && \
-    pacman -Syyu --noconfirm
+# here is how to fix, install the latest gpg keyring package which we 
+# downloaded from outside of docker locally.
+# Copy the local keyring package and the installer script
+COPY archlinux-keyring.pkg.tar.zst /opt/archlinux-keyring.pkg.tar.zst
+COPY seed-arch-keyring-local-file.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/seed-arch-keyring-local-file.sh
+
+RUN rm -rf /etc/pacman.d/gnupg/* /var/lib/pacman/sync && \
+    pacman-key --init
+
+# Do a local (offline) install of the latest keyring only
+RUN /usr/local/bin/seed-arch-keyring-local-file.sh --pkg /opt/archlinux-keyring.pkg.tar.zst
+
+# make full system update
+RUN /usr/local/bin/package-mgr-v2 --load-env-file=/usr/local/bin/proxy.env -Syyu --noconfirm
 
 # Base packages install
-RUN pacman -S --noconfirm \
-      systemd \
-      openssh \
-      firewalld \
-      cronie \
-      python \
-      bash \
-      vim \
-      sudo \
-      rsync \
-      curl \
-      ca-certificates ca-certificates-utils && \
-    pacman -Scc --noconfirm
+#RUN pacman -S --noconfirm \
+RUN /usr/local/bin/package-mgr-v2 \
+  --load-env-file=/usr/local/bin/proxy.env \
+  --noconfirm -Sy \
+    systemd \
+    openssh \
+    firewalld \
+    cronie \
+    python \
+    bash \
+    vim \
+    sudo \
+    rsync \
+    curl \
+    ca-certificates \
+    ca-certificates-utils
+
 
 # Enable services
 RUN systemctl enable sshd && \
@@ -86,13 +96,18 @@ RUN sed -i 's/#PasswordAuthentication yes/PasswordAuthentication no/' /etc/ssh/s
     sed -i 's/#AuthorizedKeysFile .ssh\/authorized_keys/AuthorizedKeysFile .ssh\/authorized_keys/' /etc/ssh/sshd_config
 
 # User + sudoers
-RUN useradd -m -s /bin/bash ${SSH_USER} && \
-    mkdir -p /home/${SSH_USER}/.ssh && \
-    chown ${SSH_USER}:${SSH_USER} /home/${SSH_USER}/.ssh && \
-    chmod 700 /home/${SSH_USER}/.ssh && \
-    echo "${SSH_USER} ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/${SSH_USER} && \
-    chmod 440 /etc/sudoers.d/${SSH_USER}
+RUN useradd -m -s /bin/bash ${MY_SSH_USER} && \
+    mkdir -p /home/${MY_SSH_USER}/.ssh && \
+    chown ${MY_SSH_USER}:${MY_SSH_USER} /home/${MY_SSH_USER}/.ssh && \
+    chmod 700 /home/${MY_SSH_USER}/.ssh && \
+    echo "${MY_SSH_USER} ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/${MY_SSH_USER} && \
+    chmod 440 /etc/sudoers.d/${MY_SSH_USER}
 
+
+# test scripts go here
+RUN mkdir /tests
+COPY test_mitmproxy_script.sh /tests
+RUN chmod +x /tests/*
 
 # Bootstrap scripts
 COPY configure.sh /usr/local/bin/configure.sh

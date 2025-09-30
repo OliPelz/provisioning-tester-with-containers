@@ -15,8 +15,8 @@ GATEWAY=10.6.120.1
 NAME1=my-ubuntu-machine
 NAME2=my-rocky-machine
 NAME3=my-arch-machine
-
 WEBPROXYCACHE_NAME1=webproxycache
+
 ALL_CONTAINER_NAMES_STRING=$(NAME1) $(NAME2) $(NAME3) $(WEBPROXYCACHE_NAME1)
 ALL_CONTAINER_RUN_MAKE_TARGETS=run-ubuntu run-rocky run-arch run-webproxycache
 
@@ -37,7 +37,7 @@ IP3=10.6.120.6
 WEBPROXYCACHE_IP1=10.6.120.9
 
 # SSH
-SSH_USER=$(shell echo "$${SSH_USER:-xgthaboradm}")
+MY_SSH_USER=$(shell echo "$${MY_SSH_USER:-xgthaboradm}")
 LOCAL_PODMAN_USER=$(shell echo "$${USER}")
 LOCAL_KEY=$(PWD)
 PROXY_CERT_BASE_PATH=$(PWD)/keys_and_certs
@@ -45,7 +45,14 @@ PUB_KEY_PATH=$(PROXY_CERT_BASE_PATH)/id_ed25519_for_containers.pub
 PRIV_KEY_PATH=$(subst .pub,,$(PUB_KEY_PATH))
 LOCAL_VOLUME_MOUNT=$(shell if [ -n "$${LOCAL_VOLUME_MOUNT_STR}" ]; then echo "$${LOCAL_VOLUME_MOUNT_STR}" | tr ',' '\n' | while read -r mapping; do echo "-v $$mapping"; done; fi)
 
+
 .DEFAULT_GOAL := help
+
+###  my proxy settings
+MY_PROXY_URL=$(WEBPROXYCACHE_IP1):3128
+#MY_NO_PROXY_STR=horst
+MY_DISABLE_IPV6_BOOL=true
+######################
 
 
 ##########################################################################################
@@ -92,6 +99,7 @@ prereqs:  ### prerequesites for running podman
 	@echo "$(GREEN_COLOR)subUID/subGID mappings configured$(NC)" >&2
 	@mkdir -p keys_and_certs
 	@$(MAKE) git-clone-or-pull GIT_REPO_URL=git@github.com:OliPelz/bash-provisioner.git TARGET_DIR=bash-provisioner
+	@$(MAKE) wget wget https://github.com/TekWizely/bash-tpl/releases/download/v0.9.0/bash-tpl && chmod +x ./bash-tpl
 
 .PHONY: gen_ssh_container_keys
 gen_ssh_container_keys: ### generate local ssh keypair for connecting to containers
@@ -130,7 +138,7 @@ gen_ssl_cert: ### generate a self-signed ssl cert
 .PHONY: get_proxy_cert
 get_proxy_cert:
 	@echo "==> Retrieving existing webproxycache SSL cert from built image"
-	@podman run $(WEBPROXYCACHE_NAME1) cat /root/.mitmproxy/mitmproxy-ca-cert.pem > $(PWD)/keys_and_certs/mitmproxy-ca-cert.pem \
+	@podman run $(WEBPROXYCACHE_IMAGE_NAME) cat /root/.mitmproxy/mitmproxy-ca-cert.pem > $(PWD)/keys_and_certs/mitmproxy-ca-cert.pem \
 	     || { echo "$(RED_COLOR)Failed to run Proxycache container$(NO_COLOR)" >&2; exit 1; };
 
 .PHONY: setup-network
@@ -142,18 +150,27 @@ setup-network:  ### setup podman network which holds all our containers
 		echo "Network $(NETWORK_NAME) already exists."; \
 	fi
 
+# NOTE: we need to run the build as sudo, otherwise we cannot use our --network parameter
+.PHONY: build_arch
+build_arch:
+	
+	sudo podman build \
+		--network $(NETWORK_NAME) \
+		-f Dockerfile.arch \
+		--build-arg MY_SSH_USER=$(MY_SSH_USER) \
+		-t $(NAME3_IMAGE_NAME) .
+	
+
+
 .PHONY: build_all_images
+#@podman build -f Dockerfile.ubuntu --build-arg MY_SSH_USER=$(MY_SSH_USER) -t $(NAME1_IMAGE_NAME) .
+#@podman build -f Dockerfile.rocky --build-arg MY_SSH_USER=$(MY_SSH_USER) -t $(NAME2_IMAGE_NAME) .
 build_all_images: gen_ssh_container_keys ### build vm alike container image
 	@echo "🔨 Building custom images with systemd and sshd..."
 	@podman build -f Dockerfile.webproxycache -t $(WEBPROXYCACHE_IMAGE_NAME) .
 	@$(MAKE) get_proxy_cert
-	@podman build -f Dockerfile.ubuntu --build-arg SSH_USER=$(SSH_USER) -t $(NAME1_IMAGE_NAME) .
-	@podman build -f Dockerfile.rocky --build-arg SSH_USER=$(SSH_USER) -t $(NAME2_IMAGE_NAME) .
-	@podman build -f Dockerfile.arch --build-arg SSH_USER=$(SSH_USER) -t $(NAME3_IMAGE_NAME) .
-
-.PHONY: debug_build_arch
-debug_build_arch:
-	@podman build -f Dockerfile.arch --build-arg SSH_USER=$(SSH_USER) -t $(NAME3_IMAGE_NAME) .
+	@$(MAKE) render_docker_template
+	@$(MAKE) build_arch
 
 # Target to create necessary volume directories
 make_volume_dirs:
@@ -166,6 +183,19 @@ render_loadbalancer_template:
 	NAME1=$(NAME1) NAME2=$(NAME2) NAME3=$(NAME3) \
 	render_template $(PWD)/loadbalancer.conf.tpl $(PWD)/loadbalancer.conf
 
+render_package_mgr_env_template:
+	@source $(PWD)/make_functions.sh; \
+	NAME1=$(NAME1) NAME2=$(NAME2) NAME3=$(NAME3) \
+	render_template $(PWD)/loadbalancer.conf.tpl $(PWD)/loadbalancer.conf
+
+render_docker_template:
+	@MY_CERT_BASE64_STR="$$(cat $(PROXY_CERT_BASE_PATH)/mitmproxy-ca-cert.pem | base64 -w0)" \
+	MY_PROXY_URL='$(MY_PROXY_URL)' \
+	MY_NO_PROXY_STR='$(MY_NO_PROXY_STR)' \
+	CERT_BASE64_STRING='$(CERT_BASE64_STRING)' \
+	MY_DISABLE_IPV6_BOOL='$(MY_DISABLE_IPV6_BOOL)' \
+	bash <( ./bash-tpl docker-proxy-env.tpl ) > docker-proxy.env
+
 ##########################################################################################
 ## container lifecycle tasks:
 
@@ -176,7 +206,7 @@ run-webproxycache:
 		--ip $(WEBPROXYCACHE_IP1) \
 		--hostname $(WEBPROXYCACHE_NAME1) \
 		-e DNS_SERVER=8.8.8.8 \
-		-p 3128 \
+		-p 3128:3128 \
 		-v $(PWD)/$(WEBPROXYCACHE_NAME1)_data:/app/the_cache_dir \
 		$(WEBPROXYCACHE_IMAGE_NAME)
 	@echo "Web proxy cache container started successfully!"
@@ -192,7 +222,7 @@ run-ubuntu:
 		-p $(SSH_PORT1):22 \
 		-v /sys/fs/cgroup:/sys/fs/cgroup:rw \
 		$(LOCAL_VOLUME_MOUNT) \
-		-e SSH_USER=$(SSH_USER) \
+		-e MY_SSH_USER=$(MY_SSH_USER) \
 		-e PUB_KEY="$$(cat $(PUB_KEY_PATH))" \
 		--userns=host \
 		--cap-add=SYS_ADMIN \
@@ -211,7 +241,7 @@ run-rocky:
 		-p $(SSH_PORT2):22 \
 		-v /sys/fs/cgroup:/sys/fs/cgroup:ro \
 		$(LOCAL_VOLUME_MOUNT) \
-		-e SSH_USER=$(SSH_USER) \
+		-e MY_SSH_USER=$(MY_SSH_USER) \
 		-e PUB_KEY="$$(cat $(PUB_KEY_PATH))" \
 		$(NAME2_IMAGE_NAME)
 	@echo "Application container $(NAME2) started successfully!"
@@ -227,10 +257,11 @@ run-arch:
 		-p $(SSH_PORT3):22 \
 		-v /sys/fs/cgroup:/sys/fs/cgroup:ro \
 		$(LOCAL_VOLUME_MOUNT) \
-		-e SSH_USER=$(SSH_USER) \
+		-e MY_SSH_USER=$(MY_SSH_USER) \
 		-e PUB_KEY="$$(cat $(PUB_KEY_PATH))" \
-		$(NAME3_IMAGE_NAME)
+		archlinux:latest
 	@echo "Application container $(NAME3) started successfully!"
+#$(NAME3_IMAGE_NAME)
 
 
 # Target to create and start all containers
@@ -325,7 +356,7 @@ ssh_login:  ### login to containers via ssh, use MYHOSTNAME= variable
 		exit 1; \
 	fi
 	@echo "$(BLUE_COLOR)Logging into container $(MYHOSTNAME) via SSH on port $(SSH_PORT)...$(NO_COLOR)" >&2
-	@ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i $(PRIV_KEY_PATH) -p $(SSH_PORT) $(SSH_USER)@localhost || { echo "$(RED_COLOR)Failed to log in via SSH$(NO_COLOR)" >&2; exit 1; }
+	@ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i $(PRIV_KEY_PATH) -p $(SSH_PORT) $(MY_SSH_USER)@localhost || { echo "$(RED_COLOR)Failed to log in via SSH$(NO_COLOR)" >&2; exit 1; }
 
 # example:
 # check if port 22 is open on container1 from container 2
@@ -345,7 +376,7 @@ ssh_run_cmd:  ### run cmd on container via ssh, MYHOSTNAME= and CMD=
 	fi
 	@echo "$(BLUE_COLOR)Running command on container $(MYHOSTNAME) via SSH on port $(SSH_PORT)...$(NO_COLOR)" >&2
 	@printf '%s' '$(CMD)' | ./make_scripts/ssh_run_cmd.sh \
-		--host localhost --port "$(SSH_PORT)" --user "$(SSH_USER)" --identity "$(PRIV_KEY_PATH)"
+		--host localhost --port "$(SSH_PORT)" --user "$(MY_SSH_USER)" --identity "$(PRIV_KEY_PATH)"
 	@echo "$(GREEN_COLOR)Command executed successfully$(NO_COLOR)" >&2
 
 
@@ -414,7 +445,7 @@ run_ansible_provisioning:
         INV_PATH=$$PWD/inventory; \
 	cd $$base_path && ANSIBLE_HOST_KEY_CHECKING=False ansible-playbook playbooks/$$playbook -i $$INV_PATH \
 		-e "ansible_ssh_private_key_file=$(PRIV_KEY_PATH)" \
-		-e "ansible_ssh_user=$(SSH_USER)" \
+		-e "ansible_ssh_user=$(MY_SSH_USER)" \
 		-e "workflow_name=$(WORKFLOW_NAME)" \
 		-e "RUN_STAGE=$(RUN_STAGE)" \
 		|| { echo "$(RED_COLOR)Failed to run Ansible playbook$(NO_COLOR)" >&2; exit 1; }
@@ -453,7 +484,7 @@ revert_all_to: ## revert to a snaphsot using its FULL_SNAPSHOT_NAME (e.g.localho
 		       -p $(SSH_PORT1):22 \
 		       -v /sys/fs/cgroup:/sys/fs/cgroup:ro \
 		       $(LOCAL_VOLUME_MOUNT) \
-		       -e SSH_USER=$(SSH_USER) \
+		       -e MY_SSH_USER=$(MY_SSH_USER) \
 		       -e PUB_KEY="$$(cat $(PUB_KEY_PATH))" \
 		       $(FULL_SNAPSHOT_NAME) || { echo "$(RED_COLOR)Failed to run container$(NO_COLOR)" >&2; exit 1; } \
 	fi
@@ -467,7 +498,7 @@ revert_all_to: ## revert to a snaphsot using its FULL_SNAPSHOT_NAME (e.g.localho
 		       -p $(SSH_PORT2):22 \
 		       -v /sys/fs/cgroup:/sys/fs/cgroup:ro \
 		       $(LOCAL_VOLUME_MOUNT) \
-		       -e SSH_USER=$(SSH_USER) \
+		       -e MY_SSH_USER=$(MY_SSH_USER) \
 		       -e PUB_KEY="$$(cat $(PUB_KEY_PATH))" \
 		       $(FULL_SNAPSHOT_NAME) || { echo "$(RED_COLOR)Failed to run container$(NO_COLOR)" >&2; exit 1; } \
 	fi
@@ -481,7 +512,7 @@ revert_all_to: ## revert to a snaphsot using its FULL_SNAPSHOT_NAME (e.g.localho
 		       -p $(SSH_PORT3):22 \
 		       -v /sys/fs/cgroup:/sys/fs/cgroup:ro \
 		       $(LOCAL_VOLUME_MOUNT) \
-		       -e SSH_USER=$(SSH_USER) \
+		       -e MY_SSH_USER=$(MY_SSH_USER) \
 		       -e PUB_KEY="$$(cat $(PUB_KEY_PATH))" \
 		       $(FULL_SNAPSHOT_NAME) || { echo "$(RED_COLOR)Failed to run container$(NO_COLOR)" >&2; exit 1; } \
 	fi
@@ -536,7 +567,7 @@ login_postgres_ssl: ### lets login to postgres using SSL
 
 .PHONY: webproxycache_logs
 logs_webproxycache:  #### open logs for webproxycache container
-	@podman logs -f $$(podman ps -a | grep 'localhost/webproxycache'| awk '{print $$1}')
+	@podman logs -f $$(podman ps -a | grep '$(WEBPROXYCACHE_IMAGE_NAME)'| awk '{print $$1}')
 
 .PHONY: logs_rsyslogd 
 logs_rsyslogd:  #### open logs for rsyslogd container
