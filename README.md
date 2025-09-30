@@ -3,6 +3,44 @@
 testing bash-provisioner on multiple platforms
 
 
+# 0) init
+
+make prereqs
+
+configure local registry using http:
+
+```bash
+mkdir -p ~/.config/containers/registries.conf.d
+cat > ~/.config/containers/registries.conf.d/localhost-5000-insecure.conf <<'EOF'
+# containers-registries.conf v2
+[[registry]]
+prefix   = "localhost:5000"
+location = "localhost:5000"
+insecure = true
+blocked  = false
+EOF
+
+```
+
+# 1) Start the registry (persists data in ./registry_data)
+make registry-up
+
+# 2) Run your containers as usual (images are already in the local registry)
+make setup-network
+
+make build_webproxycache
+make run-webproxycache
+
+
+# 2) Build everything and push to the local registry automatically
+make build_all_images
+
+make run-arch
+# ...or create all:
+make create_all
+
+
+
 ## prepare arch image
 
 since arch is rolling update, the image contains old GPG keys and outdated

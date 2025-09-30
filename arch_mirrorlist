@@ -4,8 +4,6 @@
 ##
 
 ## Germany
-Server = http://mirror.23m.com/archlinux/$repo/os/$arch
-Server = https://mirror.23m.com/archlinux/$repo/os/$arch
 Server = http://ftp.agdsn.de/pub/mirrors/archlinux/$repo/os/$arch
 Server = https://ftp.agdsn.de/pub/mirrors/archlinux/$repo/os/$arch
 Server = http://mirrors.aminvakil.com/archlinux/$repo/os/$arch
