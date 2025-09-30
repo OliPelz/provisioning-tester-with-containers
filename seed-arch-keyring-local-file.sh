@@ -18,13 +18,14 @@ PARAMETERS
 Honors environment (only used if you pass --also-update):
   MY_PROXY_URL               e.g. http://proxy:3128
   MY_NO_PROXY_STR            e.g. 127.0.0.1,localhost
-  MY_CERT_BASE64_STR         base64-encoded PEM (TLS intercept CA)
+  USE_MITM_INTERCEPT_PROXY_CERT  "true" or "1" → extract leaf cert via proxy for curl/pacman XferCommand
   MY_DISABLE_IPV6_BOOL       "true" or "1" → curl/pacman XferCommand uses IPv4
 
 What it does:
   1) Create a temp pacman.conf with:
        LocalFileSigLevel = Optional TrustAll
      so a *local file* keyring can be installed without preexisting keys.
+     without LocalFileSigLevel we cannot install it because it will not be allowed.
   2) pacman --config <temp> -U <your .pkg.tar.zst> --noconfirm
   3) If --also-update:
        Create another temp pacman.conf injecting curl-based XferCommand that
@@ -106,12 +107,32 @@ make_temp_pacman_conf_net() {
   local -a cf=(-L -C - --retry 3 --retry-delay 3 --connect-timeout 600 --max-time 600)
   [[ "${MY_DISABLE_IPV6_BOOL:-}" =~ ^(true|1)$ ]] && cf+=(--ipv4)
   [[ -n "${MY_PROXY_URL:-}"    ]] && cf=(--proxy "${MY_PROXY_URL}" "${cf[@]}")
-  if [[ -n "${MY_CERT_BASE64_STR:-}" ]]; then
-    TMP_CA="$(mktemp /tmp/mitm-ca.XXXXXX.pem)"
-    printf '%s' "$MY_CERT_BASE64_STR" | base64 -d > "$TMP_CA"
-    chmod 600 "$TMP_CA" || true
-    cf=(--cacert "${TMP_CA}" "${cf[@]}")
+
+  # --- NEW: optional MITM cert extraction via proxy (uses extract_cert_via_proxy) ---
+  if [[ "${USE_MITM_INTERCEPT_PROXY_CERT:-}" =~ ^([Tt][Rr][Uu][Ee]|1)$ ]] && [[ -n "${MY_PROXY_URL:-}" ]]; then
+    # strip scheme for openssl s_client -proxy
+    local _px="${MY_PROXY_URL#http://}"; _px="${_px#https://}"
+    # try to detect a probe site from mirrorlist, else fallback
+    local _site=""
+    if [[ -r /etc/pacman.d/mirrorlist ]]; then
+      _site="$(awk '/^[[:space:]]*Server[[:space:]]*=/ {print $3; exit}' /etc/pacman.d/mirrorlist 2>/dev/null || true)"
+    fi
+    [[ -z "$_site" ]] && _site="https://geo.mirror.pkgbuild.com"
+
+    if type extract_cert_via_proxy >/dev/null 2>&1; then
+      if TMP_CA="$(extract_cert_via_proxy "$_site" "$_px")"; then
+        chmod 600 "$TMP_CA" || true
+        cf=(--cacert "${TMP_CA}" "${cf[@]}")
+        log "Injected --cacert from MITM-extracted cert for XferCommand"
+      else
+        log "extract_cert_via_proxy failed; continuing without --cacert"
+      fi
+    else
+      log "extract_cert_via_proxy not found in PATH; continuing without --cacert"
+    fi
   fi
+  # ---------------------------------------------------------------------------
+
   {
     echo "[options]"
     echo "SigLevel = Required DatabaseOptional"

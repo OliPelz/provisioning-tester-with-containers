@@ -8,8 +8,8 @@ export MY_PROXY_URL=<%|%q|${MY_PROXY_URL}%>
 export MY_NO_PROXY_STR=<%|%q|${MY_NO_PROXY_STR}%>
 % fi
 
-% if [[ -n ${MY_CERT_BASE64_STR:-} ]]; then
-export MY_CERT_BASE64_STR=<%|%q|${MY_CERT_BASE64_STR}%>
+% if [[ -n ${MY_USE_MITM_INTERCEPT_PROXY_CERT:-} ]]; then
+export MY_USE_MITM_INTERCEPT_PROXY_CERT=<%|%q|${MY_USE_MITM_INTERCEPT_PROXY_CERT}%>
 % fi
 
 % if [[ -n ${MY_DISABLE_IPV6_BOOL:-} ]]; then

@@ -1,5 +1,34 @@
 # Seed Arch keyring from a local file (no network in Docker)
 
+## tldr;
+
+— on the official Pacman Mirrorlist Generator there’s a checkbox for this.
+
+How to only use mirrors that work:
+
+Open the generator.
+
+Pick your nearby countries (e.g., Germany, Netherlands).
+
+Select https (recommended).
+
+Tick “Use mirror status” — this uses Arch’s live Mirror Status data and only lists up-to-date mirrors. 
+archlinux.org
+
+If you want to automate/refresh this regularly, use reflector instead of the web form, e.g.:
+
+```bash
+sudo pacman -S reflector
+sudo reflector --country Germany,Netherlands \
+  --protocol https --ipv4 --ipv6 \
+  --latest 20 --sort rate \
+  --save /etc/pacman.d/mirrorlist
+```
+
+Reflector pulls from the Mirror Status feed, filters to fresh mirrors, sorts by speed/age, and writes your mirrorlist. 
+ArchWiki
+
+
 We install `archlinux-keyring` from a **locally downloaded** package so the
 Docker build doesn’t need outbound TLS (or proxy tweaks) just to trust mirrors.
 

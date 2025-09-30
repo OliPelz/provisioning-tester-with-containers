@@ -48,7 +48,6 @@ COPY arch_mirrorlist /etc/pacman.d/mirrorlist
 RUN chmod 644 /etc/pacman.d/mirrorlist
 
 
-
 # due to arch is a rolling update some repo sources and gpg keys are outdated
 # here is how to fix, install the latest gpg keyring package which we 
 # downloaded from outside of docker locally.
